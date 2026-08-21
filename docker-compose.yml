@@ -1,0 +1,18 @@
+services:
+  trading-terminal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aether-trading-terminal:latest
+    container_name: aether_trading_terminal
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind mounts allow real-time code changes and SQLite database persistence
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

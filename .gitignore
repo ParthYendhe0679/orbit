@@ -1,0 +1,20 @@
+# Secrets — .env holds live API keys and the database URL
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local SQLite fallback database
+backend/*.db
+
+# Node
+node_modules/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

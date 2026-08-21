@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orbit Trading Terminal - 7-Agent AI Simulator</title>
+    <!-- Google Fonts for premium typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- FontAwesome for clean icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Three.js CDN for 3D Graphics -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- TradingView Advanced Widget Script -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- 3D BACKGROUND CANVAS -->
+    <canvas id="three-canvas"></canvas>
+
+    <!-- ============================================== -->
+    <!--   1. LANDING PAGE & SCROLLABLE PORTAL          -->
+    <!-- ============================================== -->
+    <div id="landing-page" class="page-view">
+        <!-- Floating Navigation Header -->
+        <header class="landing-header">
+            <div class="logo-area">
+                <i class="fa-solid fa-microchip logo-icon"></i>
+                <h2>ORBIT SYSTEMS</h2>
+            </div>
+            <button id="nav-login-btn" class="glow-btn btn-secondary">
+                <i class="fa-solid fa-right-to-bracket"></i> Login
+            </button>
+        </header>
+
+        <!-- Hero Section -->
+        <section class="hero-section">
+            <h1 class="hero-title">Autonomous Agentic Trading</h1>
+            <p class="hero-subtitle">
+                A collaborative multi-agent AI system analyzing technical levels, news sentiment, and risk models to execute simulated trades in real-time.
+            </p>
+            <div class="hero-actions">
+                <button id="get-started-btn" class="glow-btn btn-primary btn-large">
+                    Get Started <i class="fa-solid fa-arrow-right"></i>
+                </button>
+            </div>
+            <div class="scroll-indicator">
+                <p>Scroll down to explore the AI Crew</p>
+                <i class="fa-solid fa-chevron-down bounce-icon"></i>
+            </div>
+        </section>
+
+        <!-- Features Scroll Section -->
+        <section class="features-section">
+            <h2 class="section-title">The 7-Agent AI Crew</h2>
+            <div class="features-grid">
+                <!-- Agent 1 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box purple-glow"><i class="fa-solid fa-arrows-to-line"></i></div>
+                    <h3>Levels Analyst</h3>
+                    <p>Detects historical support and resistance zones. Draws critical levels on the live TradingView chart.</p>
+                </div>
+                <!-- Agent 2 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box yellow-glow"><i class="fa-solid fa-chart-bar"></i></div>
+                    <h3>Technical Analyst</h3>
+                    <p>Monitors moving averages, MACD crossovers, and RSI indexes to evaluate current price momentum.</p>
+                </div>
+                <!-- Agent 3 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box blue-glow"><i class="fa-solid fa-newspaper"></i></div>
+                    <h3>Sentiment Analyst</h3>
+                    <p>Scrapes RSS feeds and reviews market headlines using Google Gemini to compute aggregate news sentiment.</p>
+                </div>
+                <!-- Agent 4 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box orange-glow"><i class="fa-solid fa-users"></i></div>
+                    <h3>Consensus Judge</h3>
+                    <p>Evaluates 10 advanced quantitative strategies and computes a unified consensus buy/sell vote.</p>
+                </div>
+                <!-- Agent 5 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box red-glow"><i class="fa-solid fa-shield-halved"></i></div>
+                    <h3>Risk Planner</h3>
+                    <p>Sets exact Stop Loss and Take Profit levels, ensuring a 1:2 risk ratio while capping exposure to 1% of equity.</p>
+                </div>
+                <!-- Agent 6 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box cyan-glow"><i class="fa-solid fa-circle-play"></i></div>
+                    <h3>Execution Broker</h3>
+                    <p>Simulates trade execution. Monitors the ticker feed and triggers pending orders instantly when price hits entry.</p>
+                </div>
+                <!-- Agent 7 -->
+                <div class="feature-card">
+                    <div class="feature-icon-box green-glow-card"><i class="fa-solid fa-user-shield"></i></div>
+                    <h3>P&L Guard</h3>
+                    <p>Monitors active positions, updates live P&L, moves Stop Loss to break-even at +1.5% profit, and manages exits.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Auth Portal Section — Login / Sign Up / OTP Verify -->
+        <section id="login-section" class="login-section">
+            <div class="login-container">
+                <div class="card auth-card">
+
+                    <!-- Auth Card Header (shared) -->
+                    <div class="login-header">
+                        <i class="fa-solid fa-microchip login-logo-icon"></i>
+                        <h2 id="auth-card-title">Terminal Access</h2>
+                        <p id="auth-card-subtitle">Sign in or create your trading account</p>
+                    </div>
+
+                    <!-- ── TAB SWITCHER ── -->
+                    <div class="auth-tabs" id="auth-tabs">
+                        <button class="auth-tab-btn active" id="tab-login-btn" onclick="switchAuthTab('login')">
+                            <i class="fa-solid fa-right-to-bracket"></i> Login
+                        </button>
+                        <button class="auth-tab-btn" id="tab-signup-btn" onclick="switchAuthTab('signup')">
+                            <i class="fa-solid fa-user-plus"></i> Sign Up
+                        </button>
+                    </div>
+
+                    <!-- ══════════════════════════════════════ -->
+                    <!--   PANEL 1 — LOGIN                     -->
+                    <!-- ══════════════════════════════════════ -->
+                    <div id="panel-login" class="auth-panel active">
+                        <form id="login-form" onsubmit="handleLogin(event)">
+                            <div class="input-group">
+                                <label for="login-username">Username</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-user input-icon"></i>
+                                    <input type="text" id="login-username" placeholder="Your username..." autocomplete="username" required>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label for="login-password">Password</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-lock input-icon"></i>
+                                    <input type="password" id="login-password" placeholder="Your password..." autocomplete="current-password" required>
+                                    <button type="button" class="pw-toggle" onclick="togglePw('login-password', this)" tabindex="-1">
+                                        <i class="fa-solid fa-eye"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="login-error" class="auth-error hidden"></div>
+                            <div class="login-actions">
+                                <button type="submit" id="login-submit-btn" class="glow-btn btn-primary">
+                                    <span>Access Console</span> <i class="fa-solid fa-right-to-bracket"></i>
+                                </button>
+                            </div>
+                            <p class="auth-switch-hint">No account? <a href="#" onclick="switchAuthTab('signup')">Sign up free →</a></p>
+                        </form>
+                    </div>
+
+                    <!-- ══════════════════════════════════════ -->
+                    <!--   PANEL 2 — SIGN UP                   -->
+                    <!-- ══════════════════════════════════════ -->
+                    <div id="panel-signup" class="auth-panel">
+                        <form id="signup-form" onsubmit="handleSignup(event)">
+                            <div class="input-group">
+                                <label for="signup-email">Gmail / Email</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-envelope input-icon"></i>
+                                    <input type="email" id="signup-email" placeholder="your@gmail.com" autocomplete="email" required>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label for="signup-username">Username</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-user input-icon"></i>
+                                    <input type="text" id="signup-username" placeholder="Choose a username..." autocomplete="username" required>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label for="signup-password">Password</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-lock input-icon"></i>
+                                    <input type="password" id="signup-password" placeholder="Min. 6 characters..." autocomplete="new-password" required>
+                                    <button type="button" class="pw-toggle" onclick="togglePw('signup-password', this)" tabindex="-1">
+                                        <i class="fa-solid fa-eye"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="input-group">
+                                <label for="signup-confirm">Confirm Password</label>
+                                <div class="input-wrapper">
+                                    <i class="fa-solid fa-shield-halved input-icon"></i>
+                                    <input type="password" id="signup-confirm" placeholder="Repeat password..." autocomplete="new-password" required>
+                                    <button type="button" class="pw-toggle" onclick="togglePw('signup-confirm', this)" tabindex="-1">
+                                        <i class="fa-solid fa-eye"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="signup-error" class="auth-error hidden"></div>
+                            <div class="login-actions">
+                                <button type="submit" id="signup-submit-btn" class="glow-btn btn-primary">
+                                    <span>Create Account</span> <i class="fa-solid fa-user-plus"></i>
+                                </button>
+                            </div>
+                            <p class="auth-switch-hint">Already have an account? <a href="#" onclick="switchAuthTab('login')">Login →</a></p>
+                        </form>
+                    </div>
+
+                    <!-- ══════════════════════════════════════ -->
+                    <!--   PANEL 3 — OTP VERIFICATION          -->
+                    <!-- ══════════════════════════════════════ -->
+                    <div id="panel-otp" class="auth-panel">
+                        <div class="otp-info">
+                            <div class="otp-icon-anim"><i class="fa-solid fa-envelope-open-text"></i></div>
+                            <p>We sent a <strong>6-digit code</strong> to<br><span id="otp-email-display" class="otp-email-text"></span></p>
+                            <p style="font-size: 11px; margin-top: 6px; color: var(--text-muted); opacity: 0.85;">(If you don't see it, please check your **Spam / Junk** folder)</p>
+                        </div>
+                        <form id="otp-form" onsubmit="handleVerifyOtp(event)">
+                            <div class="otp-input-group">
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d1" oninput="otpInputNext(this,'otp-d2')" onkeydown="otpInputBack(event,this,'')">
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d2" oninput="otpInputNext(this,'otp-d3')" onkeydown="otpInputBack(event,this,'otp-d1')">
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d3" oninput="otpInputNext(this,'otp-d4')" onkeydown="otpInputBack(event,this,'otp-d2')">
+                                <span class="otp-sep">—</span>
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d4" oninput="otpInputNext(this,'otp-d5')" onkeydown="otpInputBack(event,this,'otp-d3')">
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d5" oninput="otpInputNext(this,'otp-d6')" onkeydown="otpInputBack(event,this,'otp-d4')">
+                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d6" oninput="otpInputNext(this,'')"    onkeydown="otpInputBack(event,this,'otp-d5')">
+                            </div>
+                            <div id="otp-error" class="auth-error hidden"></div>
+                            <div class="login-actions">
+                                <button type="submit" id="otp-submit-btn" class="glow-btn btn-primary">
+                                    <span>Verify Code</span> <i class="fa-solid fa-check-circle"></i>
+                                </button>
+                            </div>
+                        </form>
+                        <div class="otp-resend-row">
+                            <span id="otp-timer-text" class="otp-timer"></span>
+                            <button id="otp-resend-btn" class="otp-resend-link hidden" onclick="handleResendOtp()">
+                                Resend code
+                            </button>
+                        </div>
+                        <p class="auth-switch-hint" style="margin-top:12px"><a href="#" onclick="switchAuthTab('login')">← Back to Login</a></p>
+                    </div>
+
+                </div><!-- /.auth-card -->
+            </div>
+        </section>
+
+    </div>
+
+    <!-- ============================================== -->
+    <!--   2. TRADING CONSOLE (MAIN APP) SECTION        -->
+    <!-- ============================================== -->
+    <div id="dashboard-page" class="page-view hidden">
+        <div class="sidebar-layout-container">
+            <!-- LEFT SIDEBAR -->
+            <aside class="app-sidebar">
+                <div class="sidebar-brand">
+                    <i class="fa-solid fa-microchip brand-icon"></i>
+                    <div class="brand-text">
+                        <h2>AETHER</h2>
+                        <span>12-AGENT TERMINAL</span>
+                    </div>
+                </div>
+
+                <!-- VERTICAL MENU -->
+                <nav class="sidebar-menu">
+                    <button id="menu-btn-dashboard" class="sidebar-menu-item active">
+                        <i class="fa-solid fa-chart-pie"></i>
+                        <span>Dashboard</span>
+                    </button>
+                    <button id="menu-btn-terminal" class="sidebar-menu-item">
+                        <i class="fa-solid fa-robot"></i>
+                        <span>Trade Agent</span>
+                    </button>
+                    <button id="menu-btn-autotrade" class="sidebar-menu-item">
+                        <i class="fa-solid fa-bolt"></i>
+                        <span>Auto-Trade Bot</span>
+                    </button>
+                    <button id="menu-btn-reports" class="sidebar-menu-item">
+                        <i class="fa-solid fa-file-invoice-dollar"></i>
+                        <span>Reports</span>
+                    </button>
+                </nav>
+
+                <!-- USER DETAILS & PROFILE AT BOTTOM -->
+                <div class="sidebar-footer">
+                    <div class="sidebar-user-profile">
+                        <div class="sidebar-user-details">
+                            <div class="sidebar-username" id="dashboard-user">Trader Account</div>
+                            <div class="sidebar-wallet-balance" id="wallet-balance">INR ₹10,00,000.00</div>
+                        </div>
+                    </div>
+                    <button id="logout-btn" class="sidebar-logout-btn" title="Exit Terminal">
+                        <i class="fa-solid fa-power-off"></i> <span>Log Out</span>
+                    </button>
+                </div>
+            </aside>
+
+            <!-- RIGHT CONTENT AREA -->
+            <main class="app-main-content">
+                <!-- TOP HEADER -->
+                <header class="content-header">
+                    <h1 id="content-header-title">Dashboard Overview</h1>
+                    <div class="system-time-badge">
+                        <i class="fa-solid fa-clock"></i> <span id="header-time-span">LIVE</span>
+                    </div>
+                </header>
+
+                <div class="content-body">
+                    <!-- TAB 1: OVERVIEW PANE -->
+                    <div id="tab-content-overview" class="tab-content">
+                        <!-- STATS GRID -->
+                        <div class="overview-stats-grid">
+                            <!-- Balance Card -->
+                            <div class="stat-card card purple-border-glow">
+                                <div class="stat-icon text-purple"><i class="fa-solid fa-wallet"></i></div>
+                                <div class="stat-info">
+                                    <span class="stat-label">Total Capital Balance</span>
+                                    <h2 class="stat-value text-purple" id="overview-balance">INR ₹10,00,000.00</h2>
+                                </div>
+                            </div>
+                            <!-- Active Trades Card -->
+                            <div class="stat-card card blue-border-glow">
+                                <div class="stat-icon text-blue"><i class="fa-solid fa-briefcase"></i></div>
+                                <div class="stat-info">
+                                    <span class="stat-label">Live Active Trades</span>
+                                    <h2 class="stat-value text-blue" id="overview-active-trades">0</h2>
+                                </div>
+                            </div>
+                            <!-- Unrealized P&L Card -->
+                            <div class="stat-card card yellow-border-glow">
+                                <div class="stat-icon text-yellow"><i class="fa-solid fa-chart-line"></i></div>
+                                <div class="stat-info">
+                                    <span class="stat-label">Unrealized P&L (Live)</span>
+                                    <h2 class="stat-value text-yellow" id="overview-unrealized-pnl">INR +₹0.00</h2>
+                                </div>
+                            </div>
+                            <!-- Realized P&L Card -->
+                            <div class="stat-card card green-border-glow">
+                                <div class="stat-icon text-green"><i class="fa-solid fa-money-bill-trend-up"></i></div>
+                                <div class="stat-info">
+                                    <span class="stat-label">Realized Profit/Loss</span>
+                                    <h2 class="stat-value text-green" id="overview-realized-pnl">INR +₹0.00</h2>
+                                </div>
+                            </div>
+                            <!-- Win Rate Card -->
+                            <div class="stat-card card cyan-border-glow">
+                                <div class="stat-icon text-cyan"><i class="fa-solid fa-trophy"></i></div>
+                                <div class="stat-info">
+                                    <span class="stat-label">Win Rate %</span>
+                                    <h2 class="stat-value text-cyan" id="overview-win-rate">0.0%</h2>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- OVERVIEW CONTENT SPLIT -->
+                        <div class="overview-content-grid">
+                            <!-- Left: Live News Feed -->
+                            <div class="card news-card-section">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-newspaper header-icon"></i>
+                                        <span>Sentiment-Analyzed Market Headlines</span>
+                                    </div>
+                                </div>
+                                <div class="news-feed-body" id="news-feed-container">
+                                    <div class="news-loading">
+                                        <i class="fa-solid fa-spinner fa-spin"></i> Loading latest sentiment headlines...
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right: Crew Status & Summary -->
+                            <div class="card crew-summary-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-microchip header-icon"></i>
+                                        <span>AI Agent Crew Status</span>
+                                    </div>
+                                </div>
+                                <div class="crew-summary-body">
+                                    <div class="crew-status-indicator">
+                                        <div class="crew-status-dot green-glow"></div>
+                                        <div class="crew-status-text">
+                                            <h3>Aether Crew Online</h3>
+                                            <p>7 Autonomous agents monitoring risk, news sentiment, and technical levels.</p>
+                                        </div>
+                                    </div>
+                                    <div class="crew-metrics-summary">
+                                        <div class="crew-stat-row">
+                                            <span>Consensus Status:</span>
+                                            <strong class="text-blue" id="overview-consensus-status">STANDBY</strong>
+                                        </div>
+                                        <div class="crew-stat-row">
+                                            <span>News Sentiment:</span>
+                                            <strong class="text-cyan" id="overview-sentiment-status">NEUTRAL</strong>
+                                        </div>
+                                        <div class="crew-stat-row">
+                                            <span>Trend Strength:</span>
+                                            <strong class="text-yellow" id="overview-trend-status">NEUTRAL</strong>
+                                        </div>
+                                    </div>
+                                    <div class="crew-winrate-gauge-box">
+                                        <h3>Win-Loss Distribution</h3>
+                                        <div class="winrate-bar-bg">
+                                            <div class="winrate-bar-fill" id="overview-winrate-bar" style="width: 0%;"></div>
+                                        </div>
+                                        <p id="overview-win-loss-text">0 Wins | 0 Losses</p>
+                                    </div>
+
+                                    <!-- TRADE HISTORY SECTION -->
+                                    <div class="crew-history-box">
+                                        <div class="crew-history-header">
+                                            <h3><i class="fa-solid fa-clock-rotate-left"></i> Trade History</h3>
+                                            <span class="crew-history-count" id="overview-history-count">0 trades</span>
+                                        </div>
+                                        <div class="crew-history-list" id="overview-history-list">
+                                            <div class="crew-history-empty">
+                                                <i class="fa-solid fa-hourglass-half"></i>
+                                                <p>No completed trades yet</p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TAB 2: TRADING TERMINAL PANE -->
+                    <div id="tab-content-terminal" class="tab-content hidden-tab">
+                        
+                        <!-- STEP 1: STOCK SELECTION VIEW -->
+                        <div id="terminal-stock-select-view" class="stock-select-container">
+                            <div class="stock-select-card card">
+                                <i class="fa-solid fa-robot select-card-icon"></i>
+                                <h2>Initialize Trade Agent</h2>
+                                <p>Search any asset — crypto, stocks, indices, forex — and launch the AI crew</p>
+
+                                <!-- SEARCH BAR with autocomplete dropdown -->
+                                <div class="select-input-group">
+                                    <div class="select-input-wrapper" style="position:relative;">
+                                        <i class="fa-solid fa-magnifying-glass select-search-icon"></i>
+                                        <input type="text" id="terminal-asset-input"
+                                               placeholder="Search: BTC-USD, AAPL, SBIN.NS, EURUSD=X..."
+                                               value="BTC-USD"
+                                               autocomplete="off">
+                                        <!-- Autocomplete dropdown -->
+                                        <div id="ticker-suggestions" class="ticker-suggestions hidden"></div>
+                                    </div>
+                                    <button id="initialize-agents-btn" class="glow-btn btn-primary">
+                                        Initialize AI Crew <i class="fa-solid fa-arrow-right"></i>
+                                    </button>
+                                </div>
+
+                                <!-- HOW IT WORKS tip -->
+                                <div class="tv-tip-box">
+                                    <i class="fa-solid fa-circle-info"></i>
+                                    <span>Once the chart opens, click the <strong>ticker symbol</strong> in the TradingView toolbar to search <em>any</em> symbol in the world.</span>
+                                </div>
+
+                                <!-- CATEGORIZED QUICK PICKS -->
+                                <div class="quick-picks-container">
+
+                                    <div class="quick-picks-category">
+                                        <span class="qp-cat-label text-yellow"><i class="fa-brands fa-bitcoin"></i> Crypto</span>
+                                        <div class="quick-picks-grid">
+                                            <button class="quick-pick-btn" data-ticker="BTC-USD"><i class="fa-brands fa-bitcoin text-yellow"></i> BTC</button>
+                                            <button class="quick-pick-btn" data-ticker="ETH-USD"><i class="fa-brands fa-ethereum text-purple"></i> ETH</button>
+                                            <button class="quick-pick-btn" data-ticker="SOL-USD"><i class="fa-solid fa-sun text-orange"></i> SOL</button>
+                                            <button class="quick-pick-btn" data-ticker="XRP-USD"><i class="fa-solid fa-droplet text-blue"></i> XRP</button>
+                                            <button class="quick-pick-btn" data-ticker="DOGE-USD"><i class="fa-solid fa-dog text-yellow"></i> DOGE</button>
+                                            <button class="quick-pick-btn" data-ticker="ADA-USD"><i class="fa-solid fa-hexagon-nodes text-cyan"></i> ADA</button>
+                                        </div>
+                                    </div>
+
+                                    <div class="quick-picks-category">
+                                        <span class="qp-cat-label text-cyan"><i class="fa-solid fa-chart-line"></i> US Stocks</span>
+                                        <div class="quick-picks-grid">
+                                            <button class="quick-pick-btn" data-ticker="AAPL"><i class="fa-brands fa-apple text-main"></i> AAPL</button>
+                                            <button class="quick-pick-btn" data-ticker="TSLA"><i class="fa-solid fa-bolt text-red"></i> TSLA</button>
+                                            <button class="quick-pick-btn" data-ticker="NVDA"><i class="fa-solid fa-microchip text-green"></i> NVDA</button>
+                                            <button class="quick-pick-btn" data-ticker="MSFT"><i class="fa-brands fa-windows text-blue"></i> MSFT</button>
+                                            <button class="quick-pick-btn" data-ticker="GOOGL"><i class="fa-brands fa-google text-yellow"></i> GOOGL</button>
+                                            <button class="quick-pick-btn" data-ticker="AMZN"><i class="fa-brands fa-amazon text-orange"></i> AMZN</button>
+                                        </div>
+                                    </div>
+
+                                    <div class="quick-picks-category">
+                                        <span class="qp-cat-label text-green"><i class="fa-solid fa-building-columns"></i> Indian Stocks</span>
+                                        <div class="quick-picks-grid">
+                                            <button class="quick-pick-btn" data-ticker="SBIN.NS"><i class="fa-solid fa-building-columns text-blue"></i> SBIN</button>
+                                            <button class="quick-pick-btn" data-ticker="RELIANCE.NS"><i class="fa-solid fa-fire text-red"></i> RELIANCE</button>
+                                            <button class="quick-pick-btn" data-ticker="TCS.NS"><i class="fa-solid fa-code text-cyan"></i> TCS</button>
+                                            <button class="quick-pick-btn" data-ticker="INFY.NS"><i class="fa-solid fa-server text-purple"></i> INFY</button>
+                                            <button class="quick-pick-btn" data-ticker="HDFCBANK.NS"><i class="fa-solid fa-piggy-bank text-yellow"></i> HDFC</button>
+                                        </div>
+                                    </div>
+
+                                    <div class="quick-picks-category">
+                                        <span class="qp-cat-label text-purple"><i class="fa-solid fa-globe"></i> Indices & Forex</span>
+                                        <div class="quick-picks-grid">
+                                            <button class="quick-pick-btn" data-ticker="SPY"><i class="fa-solid fa-flag-usa text-blue"></i> S&amp;P 500</button>
+                                            <button class="quick-pick-btn" data-ticker="QQQ"><i class="fa-solid fa-rocket text-purple"></i> NASDAQ</button>
+                                            <button class="quick-pick-btn" data-ticker="EURUSD=X"><i class="fa-solid fa-euro-sign text-yellow"></i> EUR/USD</button>
+                                            <button class="quick-pick-btn" data-ticker="USDINR=X"><i class="fa-solid fa-indian-rupee-sign text-green"></i> USD/INR</button>
+                                        </div>
+                                    </div>
+
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- STEP 2: ACTIVE TRADING TERMINAL VIEW -->
+                        <div id="terminal-active-trading-view" class="atv-container hidden-tab">
+
+                            <!-- MAIN 2-COLUMN BODY -->
+                            <div class="atv-body">
+
+                                <!-- ── LEFT COLUMN ── -->
+                                <div class="atv-left">
+
+                                    <!-- TradingView Chart -->
+                                    <section class="card atv-chart-card">
+                                        <div class="card-header chart-card-header">
+                                            <div class="card-title">
+                                                <i class="fa-solid fa-chart-candlestick header-icon"></i>
+                                                <span id="current-asset-title">BTC-USD Real-Time Chart</span>
+                                            </div>
+                                            <div class="chart-legend" id="chart-legend">
+                                                <span class="legend-val text-green" id="legend-price">—</span>
+                                                <span class="legend-val" id="legend-change"></span>
+                                            </div>
+                                        </div>
+                                        <div class="chart-body" id="chart-container" style="position:relative;">
+                                            <div id="tradingview-widget-container" style="height:100%;width:100%;"></div>
+                                            <!-- S/R + Liquidity overlay drawn by agent -->
+                                            <canvas id="chart-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
+                                        </div>
+                                        <div class="chart-footer-toolbar">
+                                            <div class="active-asset-info">
+                                                <span class="active-ticker-badge" id="active-ticker-display">BTC-USD</span>
+                                                <span class="active-indicator-pulse"></span>
+                                                <span class="active-status-label" id="atv-status-label">AI Crew Ready</span>
+                                            </div>
+                                            <div class="atv-toolbar-actions">
+                                                <button id="btn-draw-sr" class="glow-btn btn-secondary">
+                                                    <i class="fa-solid fa-arrows-to-line"></i> S/R Levels
+                                                </button>
+                                                <button id="stop-btn" class="glow-btn btn-danger">
+                                                    <i class="fa-solid fa-stop"></i> Stop
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <!-- ══ TRADE CONFIRMATION MODAL ══ -->
+                                    <div id="trade-confirm-modal" class="trade-confirm-overlay hidden">
+                                        <div class="trade-confirm-card">
+                                            <div class="tc-header">
+                                                <i class="fa-solid fa-robot tc-icon"></i>
+                                                <h3>AI Trade Signal</h3>
+                                                <p class="tc-subtitle">The Risk Planner has prepared a trade. Review and confirm to execute.</p>
+                                            </div>
+                                            <div class="tc-details">
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-arrow-trend-up"></i> Direction</span>
+                                                    <span class="tc-val" id="tc-direction">BUY</span>
+                                                </div>
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-crosshairs"></i> Entry Price</span>
+                                                    <span class="tc-val text-cyan" id="tc-entry">—</span>
+                                                </div>
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-shield-halved"></i> Stop Loss</span>
+                                                    <span class="tc-val text-red" id="tc-sl">—</span>
+                                                </div>
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-bullseye"></i> Target</span>
+                                                    <span class="tc-val text-green" id="tc-target">—</span>
+                                                </div>
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-scale-balanced"></i> Risk : Reward</span>
+                                                    <span class="tc-val text-yellow" id="tc-rr">—</span>
+                                                </div>
+                                                <div class="tc-divider"></div>
+                                                <div class="tc-row tc-capital-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-wallet"></i> Capital Required</span>
+                                                    <span class="tc-val tc-capital" id="tc-capital">—</span>
+                                                </div>
+                                                <div class="tc-row">
+                                                    <span class="tc-lbl"><i class="fa-solid fa-triangle-exclamation"></i> Max Risk</span>
+                                                    <span class="tc-val text-red" id="tc-max-risk">—</span>
+                                                </div>
+                                            </div>
+                                            <div class="tc-actions">
+                                                <button class="glow-btn btn-danger" onclick="rejectTrade()">
+                                                    <i class="fa-solid fa-xmark"></i> Skip Trade
+                                                </button>
+                                                <button class="glow-btn btn-primary" onclick="confirmTrade()">
+                                                    <i class="fa-solid fa-check"></i> Place Trade
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Signal + S/R panels (shown by agents) -->
+                                    <div id="signal-levels-panel" class="signal-levels-panel hidden">
+                                        <div class="signal-panel-title"><i class="fa-solid fa-bullseye"></i> Agent Trade Signal</div>
+                                        <div class="signal-levels-row">
+                                            <div class="signal-level-item">
+                                                <span class="signal-lbl">ENTRY</span>
+                                                <span class="signal-val text-cyan" id="signal-entry">—</span>
+                                            </div>
+                                            <div class="signal-level-item">
+                                                <span class="signal-lbl">STOP LOSS</span>
+                                                <span class="signal-val text-red" id="signal-sl">—</span>
+                                            </div>
+                                            <div class="signal-level-item">
+                                                <span class="signal-lbl">TARGET</span>
+                                                <span class="signal-val text-green" id="signal-target">—</span>
+                                            </div>
+                                            <div class="signal-level-item">
+                                                <span class="signal-lbl">R:R</span>
+                                                <span class="signal-val text-yellow" id="signal-rr">—</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div id="sr-levels-panel" class="sr-levels-panel hidden">
+                                        <div class="signal-panel-title"><i class="fa-solid fa-arrows-to-line"></i> Key Price Zones</div>
+                                        <div class="sr-levels-row">
+                                            <div class="sr-group">
+                                                <span class="sr-group-label text-purple"><i class="fa-solid fa-arrow-up"></i> Resistance</span>
+                                                <div id="sr-resistance-list" class="sr-list"></div>
+                                            </div>
+                                            <div class="sr-group">
+                                                <span class="sr-group-label text-green"><i class="fa-solid fa-arrow-down"></i> Support</span>
+                                                <div id="sr-support-list" class="sr-list"></div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- SLOW-SCROLLING VERTICAL NEWS FEED -->
+                                    <section class="card atv-news-card">
+                                        <div class="atv-news-header">
+                                            <div class="card-title">
+                                                <i class="fa-solid fa-satellite-dish header-icon"></i>
+                                                <span>Live Market News</span>
+                                            </div>
+                                            <span class="news-live-badge"><span class="news-live-dot"></span> LIVE</span>
+                                        </div>
+                                        <div class="atv-news-scroll-outer">
+                                            <div class="atv-news-scroll-inner" id="atv-news-scroll">
+                                                <span class="news-ticker-loading">📡 Fetching latest news headlines…</span>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                </div><!-- /atv-left -->
+
+                                <!-- ── RIGHT COLUMN ── -->
+                                <div class="atv-right">
+
+                                    <!-- 7 AGENT STATUS CARDS -->
+                                    <section class="card atv-agents-card">
+                                        <div class="card-header">
+                                            <div class="card-title">
+                                                <i class="fa-solid fa-robot header-icon"></i>
+                                                <span>7-Agent AI Crew</span>
+                                            </div>
+                                            <span class="system-status" id="system-status">
+                                                <span class="status-dot green-glow"></span> STANDBY
+                                            </span>
+                                        </div>
+
+                                        <div class="agent-crew-list" id="agent-crew-list">
+                                            <!-- Agent 1 -->
+                                            <div class="agent-row" id="agent-row-chart" data-agent="chart">
+                                                <div class="agent-row-icon" style="background:rgba(0,240,255,0.1);color:#00f0ff">
+                                                    <i class="fa-solid fa-chart-area"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Chart Analyst</span>
+                                                    <span class="agent-row-status" id="agent-status-chart">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-chart">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 2 -->
+                                            <div class="agent-row" id="agent-row-indicators" data-agent="indicators">
+                                                <div class="agent-row-icon" style="background:rgba(255,204,0,0.1);color:#ffcc00">
+                                                    <i class="fa-solid fa-wave-square"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Indicators Agent</span>
+                                                    <span class="agent-row-status" id="agent-status-indicators">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-indicators">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 3 -->
+                                            <div class="agent-row" id="agent-row-news" data-agent="news">
+                                                <div class="agent-row-icon" style="background:rgba(51,153,255,0.1);color:#3399ff">
+                                                    <i class="fa-solid fa-newspaper"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">News Analyst</span>
+                                                    <span class="agent-row-status" id="agent-status-news">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-news">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 4 -->
+                                            <div class="agent-row" id="agent-row-consensus" data-agent="consensus">
+                                                <div class="agent-row-icon" style="background:rgba(255,153,0,0.1);color:#ff9900">
+                                                    <i class="fa-solid fa-scale-balanced"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Consensus Agent</span>
+                                                    <span class="agent-row-status" id="agent-status-consensus">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-consensus">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 5 -->
+                                            <div class="agent-row" id="agent-row-risk" data-agent="risk">
+                                                <div class="agent-row-icon" style="background:rgba(255,87,34,0.1);color:#ff5722">
+                                                    <i class="fa-solid fa-shield-halved"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Risk Planner</span>
+                                                    <span class="agent-row-status" id="agent-status-risk">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-risk">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 6 -->
+                                            <div class="agent-row" id="agent-row-execution" data-agent="execution">
+                                                <div class="agent-row-icon" style="background:rgba(0,240,255,0.08);color:#00f0ff">
+                                                    <i class="fa-solid fa-bolt"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Execution Agent</span>
+                                                    <span class="agent-row-status" id="agent-status-execution">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-execution">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                            <!-- Agent 7 -->
+                                            <div class="agent-row" id="agent-row-monitor" data-agent="monitor">
+                                                <div class="agent-row-icon" style="background:rgba(0,255,102,0.08);color:#00ff66">
+                                                    <i class="fa-solid fa-eye"></i>
+                                                </div>
+                                                <div class="agent-row-info">
+                                                    <span class="agent-row-name">Monitor Agent</span>
+                                                    <span class="agent-row-status" id="agent-status-monitor">Waiting…</span>
+                                                </div>
+                                                <div class="agent-row-tick" id="agent-tick-monitor">
+                                                    <i class="fa-solid fa-circle-check"></i>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <!-- TRADE THROUGH AGENT BUTTON -->
+                                        <div class="atv-trade-btn-wrap">
+                                            <button id="trade-through-agent-btn" class="trade-agent-btn">
+                                                <i class="fa-solid fa-rocket"></i>
+                                                Trade Through Agent
+                                            </button>
+                                            <div class="atv-progress-bar-wrap hidden" id="atv-progress-wrap">
+                                                <div class="atv-progress-bar" id="atv-progress-bar"></div>
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                    <!-- Agent Operations Log -->
+                                    <section class="card atv-console-card">
+                                        <div class="card-header">
+                                            <div class="card-title">
+                                                <i class="fa-solid fa-terminal header-icon"></i>
+                                                <span>Agent Operations Log</span>
+                                            </div>
+                                        </div>
+                                        <div class="console-body" id="console-logs">
+                                            <div class="log-line system-log">
+                                                <span class="log-time">--:--:--</span> <strong>[SYSTEM]</strong>: Console initialized. Waiting for agent pipeline...
+                                            </div>
+                                        </div>
+                                    </section>
+
+                                </div><!-- /atv-right -->
+
+                            </div><!-- /atv-body -->
+                        </div><!-- /terminal-active-trading-view -->
+
+                    </div><!-- /tab-content-terminal -->
+
+                    <!-- TAB 3: AUTOTRADE BOT PANE -->
+                    <div id="tab-content-autotrade" class="tab-content hidden-tab">
+                        <div class="card autotrade-config-card" style="max-width: 600px; margin: 0 auto; padding: 2rem;">
+                            <div class="card-header" style="justify-content: center; margin-bottom: 2rem;">
+                                <div class="card-title">
+                                    <i class="fa-solid fa-bolt" style="color: #ffc107; font-size: 24px; margin-right: 12px;"></i>
+                                    <h2 style="font-size: 22px;">Auto-Trade Configuration</h2>
+                                </div>
+                            </div>
+                            
+                            <form id="autotrade-form">
+                                <div class="input-group">
+                                    <label for="autotrade-assets">Assets to Scan (comma separated)</label>
+                                    <div class="input-wrapper">
+                                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
+                                        <input type="text" id="autotrade-assets" placeholder="e.g. BTC-USD, ETH-USD, GC=F" required>
+                                    </div>
+                                </div>
+                                <div class="input-group">
+                                    <label for="autotrade-capital">Allocated Capital (INR)</label>
+                                    <div class="input-wrapper">
+                                        <i class="fa-solid fa-wallet input-icon"></i>
+                                        <input type="number" id="autotrade-capital" value="10000" min="1000" required>
+                                    </div>
+                                </div>
+                                <div class="input-group" style="display:flex; gap: 1rem;">
+                                    <div style="flex:1;">
+                                        <label for="autotrade-min-profit">Target Profit (INR)</label>
+                                        <div class="input-wrapper">
+                                            <input type="number" id="autotrade-min-profit" value="3000" min="50" required style="padding-left:12px;">
+                                        </div>
+                                    </div>
+                                    <div style="flex:1;">
+                                        <label for="autotrade-max-profit">Max Loss (INR)</label>
+                                        <div class="input-wrapper">
+                                            <input type="number" id="autotrade-max-profit" value="500" min="100" required style="padding-left:12px;">
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div style="margin-top: 2rem; display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); padding: 1.5rem; border-radius: 8px;">
+                                    <div>
+                                        <h3 style="margin-bottom: 5px;">Bot Status</h3>
+                                        <p id="autotrade-status-text" style="color: var(--text-muted); font-size: 13px;">Currently stopped</p>
+                                    </div>
+                                    <label class="switch" style="position: relative; display: inline-block; width: 60px; height: 34px;">
+                                        <input type="checkbox" id="autotrade-toggle" style="opacity: 0; width: 0; height: 0;">
+                                        <span class="slider round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #3a3f50; transition: .4s; border-radius: 34px;"></span>
+                                        <span class="slider-knob" style="position: absolute; content: ''; height: 26px; width: 26px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; pointer-events: none;"></span>
+                                    </label>
+                                </div>
+                                <style>
+                                    #autotrade-toggle:checked + .slider { background-color: #00ff66; box-shadow: 0 0 15px rgba(0,255,102,0.3); }
+                                    #autotrade-toggle:checked ~ .slider-knob { transform: translateX(26px); }
+                                </style>
+                                
+                                <div class="login-actions" style="margin-top: 1.5rem;">
+                                    <button type="button" id="autotrade-save-btn" class="glow-btn btn-primary" style="width: 100%;">
+                                        <i class="fa-solid fa-floppy-disk"></i> Save Configuration
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div><!-- /tab-content-autotrade -->
+                    
+                </div><!-- /page-view -->
+            </main>
+        </div>
+    </div>
+    
+    <!-- Custom 3D Scene Controls script -->
+    <script src="three-scene.js"></script>
+    <script src="app.js?v=2"></script>
+</body>
+</html>

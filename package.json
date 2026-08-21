@@ -1,0 +1,17 @@
+{
+  "name": "testttai",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "python -m uvicorn backend.main:app --reload",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "lightweight-charts": "^5.2.0",
+    "three": "^0.185.0"
+  }
+}
