@@ -1,316 +1,264 @@
-// 3D Three.js Market Grid & Massive Stock Graph Scene Controller (Solid Volatile)
+// ====================================================================
+//   ORBIT AI - CONTINUOUSLY MOVING FULL-WIDTH 3D CANDLESTICKS
+//   Deep vibrant emerald green & crimson red candles streaming
+//   continuously across the entire screen behind the centered hero.
+// ====================================================================
 
 let scene, camera, renderer;
-let particleSystem, chartGroup, dustSystem;
+let candleGroup;
 let mouseX = 0, mouseY = 0;
 let currentScroll = 0;
-let pulsingLight;
-
-// References for dynamic scroll-grow chart
-let chartPoints = [];
-let chartCandles = []; // Array of groups
-let trendLine;
+let is3DRunning = true;
+let candles = [];
 
 const windowHalfX = window.innerWidth / 2;
 const windowHalfY = window.innerHeight / 2;
+
+// Shared Materials for maximum rendering performance (60 FPS)
+let bullishMat, bearishMat, wickBullMat, wickBearMat;
+
+// --------------------------------------------------------------------
+//   CURVE PROFILE: Elegant U-Bowl Trajectory
+//   High on flanks, gracefully dipping deep in the center
+// --------------------------------------------------------------------
+// --------------------------------------------------------------------
+//   CURVE PROFILE: U-Bowl Trajectory Matching User's Drawn Path & Video
+//   Crests on left flank, swoops deep into clouds under headline/buttons,
+//   and climbs steep into soaring bullish candles on the right.
+// --------------------------------------------------------------------
+function getChartBaseY(x) {
+    // Left flank wave (crest around x = -22)
+    const leftFlank = 6.5 * Math.exp(-Math.pow((x + 22) / 8.5, 2));
+    // Right flank surge (rising high from x = 10 to 36)
+    const rightFlank = 16.5 / (1.0 + Math.exp(-(x - 14) / 5.0));
+    // Deep center dip that drops below center headline & buttons into clouds
+    const centerDip = -7.5 * Math.exp(-Math.pow(x / 11.5, 2));
+
+    return leftFlank + rightFlank + centerDip - 6.2;
+}
+
+// --------------------------------------------------------------------
+//   INITIALIZATION
+// --------------------------------------------------------------------
+let particleSystem;
 
 function init3D() {
     const canvas = document.getElementById('three-canvas');
     if (!canvas) return;
 
-    // 1. Scene & Camera
+    // 1. Scene & Deep Cinematic Black Atmosphere
     scene = new THREE.Scene();
-    scene.fog = new THREE.FogExp2(0x06070a, 0.008); // Deep dark background with light fog
+    scene.background = new THREE.Color(0x020406);
+    scene.fog = new THREE.FogExp2(0x020406, 0.009);
 
-    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
-    camera.position.set(0, 18, 65);
+    // 2. Camera: Centered framing
+    camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 1000);
+    updateCameraFraming();
 
-    // 2. WebGL Renderer
-    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+    // 3. WebGL Renderer with Linear Tone Mapping
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: false });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.LinearToneMapping;
+    renderer.toneMappingExposure = 1.15;
 
-    // 3. Create Colorful Waving Market Grid (Floor)
-    createParticleFloor();
+    // 4. Setup Lighting (Rich Colored Atmosphere)
+    setupSceneLighting();
 
-    // 4. Create Atmospheric Market Dust (Drifting stars)
-    createMarketDust();
+    // 5. Initialize Materials
+    initCandleMaterials();
 
-    // 5. Create Massive Bold 3D Stock Graph
-    create3DStockChart();
+    // 6. Build Slender High-Density Candlestick Array (Video Match)
+    buildCandlesticks();
 
-    // 6. Lighting - Dynamic glowing colors
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.02); // Very low ambient to make glow pop
+    // 7. Ambient Floating Dust Particles (Video Match)
+    buildParticles();
+
+    // 8. Event Listeners
+    document.addEventListener('mousemove', onDocumentMouseMove, { passive: true });
+    window.addEventListener('resize', onWindowResize, { passive: true });
+    window.addEventListener('scroll', onWindowScroll, { passive: true });
+}
+
+// --------------------------------------------------------------------
+//   MATERIALS: Rich Glowing Emerald & Ruby (Reference Video Style)
+// --------------------------------------------------------------------
+function initCandleMaterials() {
+    // Rich Glowing Emerald Green (Bullish) - slender & luminous
+    bullishMat = new THREE.MeshStandardMaterial({
+        color: 0x00c853,
+        emissive: 0x00e676,
+        emissiveIntensity: 0.45,
+        roughness: 0.28,
+        metalness: 0.08,
+        transparent: false
+    });
+
+    // Rich Glowing Crimson Ruby (Bearish) - slender & luminous
+    bearishMat = new THREE.MeshStandardMaterial({
+        color: 0xd50000,
+        emissive: 0xff1744,
+        emissiveIntensity: 0.45,
+        roughness: 0.28,
+        metalness: 0.08,
+        transparent: false
+    });
+
+    wickBullMat = new THREE.MeshBasicMaterial({ color: 0x00ff88 });
+    wickBearMat = new THREE.MeshBasicMaterial({ color: 0xff3b30 });
+}
+
+// --------------------------------------------------------------------
+//   LIGHTING: Colored accents for depth and edge highlights
+// --------------------------------------------------------------------
+function setupSceneLighting() {
+    const ambientLight = new THREE.AmbientLight(0x0b1320, 0.45);
     scene.add(ambientLight);
 
-    pulsingLight = new THREE.PointLight(0x00ff66, 6, 80);
-    pulsingLight.position.set(0, 5, 0);
-    scene.add(pulsingLight);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.35);
+    dirLight.position.set(6, 28, 22);
+    scene.add(dirLight);
 
-    const cyanLight = new THREE.PointLight(0x00f0ff, 4.5, 75);
-    cyanLight.position.set(-30, 12, 10);
-    scene.add(cyanLight);
+    const rightEmeraldLight = new THREE.PointLight(0x00e676, 2.2, 50);
+    rightEmeraldLight.position.set(22, 10, 6);
+    scene.add(rightEmeraldLight);
 
-    const magentaLight = new THREE.PointLight(0xff3344, 4.5, 75); // Bold Red PointLight
-    magentaLight.position.set(30, 12, 10);
-    scene.add(magentaLight);
+    const leftEmeraldLight = new THREE.PointLight(0x00e676, 1.8, 45);
+    leftEmeraldLight.position.set(-20, 6, 6);
+    scene.add(leftEmeraldLight);
 
-    // 7. Event Listeners
-    document.addEventListener('mousemove', onDocumentMouseMove);
-    window.addEventListener('resize', onWindowResize);
-    window.addEventListener('scroll', onWindowScroll);
+    const rubyLight = new THREE.PointLight(0xef4444, 1.5, 40);
+    rubyLight.position.set(8, -2, 6);
+    scene.add(rubyLight);
 }
 
-// -------------------------------------------------------------
-//   VOLUMETRIC NEON TUBE GENERATOR
-// -------------------------------------------------------------
-function createNeonTube(p1, p2, radius, colorHex) {
-    const direction = new THREE.Vector3().subVectors(p2, p1);
-    const length = direction.length();
-    
-    const geom = new THREE.CylinderGeometry(radius, radius, length, 6);
-    geom.translate(0, length / 2, 0);
-    geom.rotateX(Math.PI / 2);
-    
-    const mat = new THREE.MeshBasicMaterial({
-        color: colorHex,
-        transparent: false,
-        opacity: 1.0
-    });
-    
-    const mesh = new THREE.Mesh(geom, mat);
-    mesh.position.copy(p1);
-    mesh.lookAt(p2);
-    return mesh;
-}
-
-// -------------------------------------------------------------
-//   SCENE BUILDERS
-// -------------------------------------------------------------
-
-function createParticleFloor() {
-    const particleCount = 2000;
+// --------------------------------------------------------------------
+//   BUILD PARTICLES (Ambient Floating Dust Like in Video)
+// --------------------------------------------------------------------
+function buildParticles() {
+    const particleCount = 75;
     const geometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
     const colors = new Float32Array(particleCount * 3);
 
-    const cols = 50;
-    const rows = 40;
-    const spacingX = 4.2;
-    const spacingZ = 4.2;
-    
-    let index = 0;
-    for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-            const x = (c - cols / 2) * spacingX;
-            const z = (r - rows / 2) * spacingZ;
-            const y = -14; // Kept lower so it doesn't overlap the big chart
+    for (let i = 0; i < particleCount; i++) {
+        positions[i * 3] = (Math.random() - 0.5) * 88;
+        positions[i * 3 + 1] = (Math.random() - 0.5) * 36;
+        positions[i * 3 + 2] = -4 + (Math.random() - 0.5) * 14;
 
-            positions[index] = x;
-            positions[index + 1] = y;
-            positions[index + 2] = z;
-
-            const color = new THREE.Color();
-            const ratio = c / cols;
-            // Bold saturated color mapping (Vibrant green -> deep blue -> red)
-            if (ratio < 0.3) {
-                color.setHSL(0.35 + ratio * 0.1, 0.95, 0.45);
-            } else if (ratio < 0.7) {
-                color.setHSL(0.55 + (ratio - 0.3) * 0.1, 0.95, 0.45);
-            } else {
-                color.setHSL(0.98 + (ratio - 0.7) * 0.05, 0.95, 0.45); // Pure red hues
-            }
-            colors[index] = color.r;
-            colors[index + 1] = color.g;
-            colors[index + 2] = color.b;
-
-            index += 3;
-        }
+        const isEmerald = Math.random() > 0.4;
+        colors[i * 3] = isEmerald ? 0.0 : 0.85;
+        colors[i * 3 + 1] = isEmerald ? 0.95 : 0.95;
+        colors[i * 3 + 2] = isEmerald ? 0.55 : 1.0;
     }
 
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-    const material = new THREE.PointsMaterial({
-        size: 0.55,
+    const pMaterial = new THREE.PointsMaterial({
+        size: 0.32,
         vertexColors: true,
         transparent: true,
-        opacity: 0.5,
-        blending: THREE.AdditiveBlending,
-        sizeAttenuation: true
-    });
-
-    particleSystem = new THREE.Points(geometry, material);
-    scene.add(particleSystem);
-}
-
-function createMarketDust() {
-    const dustCount = 350;
-    const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(dustCount * 3);
-    const colors = new Float32Array(dustCount * 3);
-
-    for (let i = 0; i < dustCount; i++) {
-        positions[i * 3] = (Math.random() - 0.5) * 160;
-        positions[i * 3 + 1] = Math.random() * 60 - 15;
-        positions[i * 3 + 2] = (Math.random() - 0.5) * 130;
-
-        const color = new THREE.Color(Math.random() > 0.5 ? 0x00ff66 : 0xff3344); // Standard Red and Green
-        colors[i * 3] = color.r;
-        colors[i * 3 + 1] = color.g;
-        colors[i * 3 + 2] = color.b;
-    }
-
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-    const material = new THREE.PointsMaterial({
-        size: 0.4,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.4,
+        opacity: 0.60,
         blending: THREE.AdditiveBlending
     });
 
-    dustSystem = new THREE.Points(geometry, material);
-    scene.add(dustSystem);
+    particleSystem = new THREE.Points(geometry, pMaterial);
+    scene.add(particleSystem);
 }
 
-function create3DStockChart() {
-    chartGroup = new THREE.Group();
-    chartPoints = [];
-    chartCandles = [];
-    
-    // Glowing Grid base mesh underneath the entire chart
-    const gridHelper = new THREE.GridHelper(100, 24, 0x00f0ff, 0x1d2130);
-    gridHelper.position.y = -10;
-    gridHelper.material.opacity = 0.35;
-    gridHelper.material.transparent = true;
-    chartGroup.add(gridHelper);
+// --------------------------------------------------------------------
+//   BUILD FULL-WIDTH CANDLESTICKS: Slender Width, Tall Height (Video Match)
+// --------------------------------------------------------------------
+function buildCandlesticks() {
+    candleGroup = new THREE.Group();
+    candles = [];
 
-    const candleCount = 24;
-    
-    // Generate Stock Coordinates: first going up, then pullback (going down), then breakout rally!
+    const totalSpan = 88;     // From x = -44 to +44
+    const stepX = 0.96;       // Slender spacing for realistic financial density (~91 candles)
+    const candleCount = Math.floor(totalSpan / stepX);
+    const startX = -totalSpan / 2;
+
+    // "candle side small": Slim, elegant width and depth
+    const candleW = 0.56;
+    const candleD = 0.46;
+
+    // Real-market sequence with realistic clusters of bullish & bearish action
+    const pattern = [
+        true, true, false, true, false, false, true, true, true, false,
+        true, false, true, true, false, false, false, true, true, false,
+        true, true, true, false, false, true, false, true, true, true,
+        true, false, false, true, true, true, false, true, false, true,
+        true, true, false, false, true, true, true, true, false, true
+    ];
+
     for (let i = 0; i < candleCount; i++) {
-        const x = (i - candleCount / 2) * 4.5; // Wider spacing (4.5) to span the whole screen width
-        
-        let y = -2;
-        if (i < 6) {
-            y = Math.sin(i * 0.8) * 3 - 2; // Wave 1: Going UP (first 5-6 candles)
-        } else if (i < 13) {
-            y = Math.cos((i - 6) * 0.6) * 3 - 3.5; // Wave 2: Pullback DOWN (candles 6 to 12)
-        } else {
-            y = Math.pow((i - 13) / 2.8, 1.9) - 3.2 + Math.sin(i * 1.5) * 1.5; // Wave 3: Breakout RALLY (candles 13+)
-        }
-        const z = Math.sin(i * 0.4) * 4;
-        
-        chartPoints.push(new THREE.Vector3(x, y, z));
-        
-        // Dynamic candle group
-        const singleCandleGroup = new THREE.Group();
-        singleCandleGroup.position.set(x, 0, z); // Center position locally
-        
-        // Alternating proper standard red and green candle colors
-        const isGreen = i % 3 !== 2; 
-        const candleColor = isGreen ? 0x00ff66 : 0xff3344; // Proper Vivid Emerald Green & Crimson Red
-        
-        // BOLDER SIZES: High variation height (some tiny Dojis, some giant Breakouts!)
-        let candleHeight = 2.5;
-        if (i % 6 === 0) {
-            candleHeight = 8.5 + Math.random() * 4.0; // Giant Breakout Candle (Big)
-        } else if (i % 6 === 3) {
-            candleHeight = 0.5 + Math.random() * 0.7; // Tiny Doji Candle (Small)
-        } else {
-            candleHeight = 2.0 + Math.random() * 3.5; // Medium Candle
-        }
-        
-        // 1. 3D SOLID Candle Core (Opaque Solid Fill)
-        const boxGeom = new THREE.BoxGeometry(2.0, candleHeight, 2.0); // Bolder width (2.0)
-        const boxMat = new THREE.MeshBasicMaterial({
-            color: candleColor,
-            transparent: false,
-            opacity: 1.0, // Full solid opacity on load
-        });
-        const candleMesh = new THREE.Mesh(boxGeom, boxMat);
-        candleMesh.position.set(0, y, 0); // Position relative to local group center
-        singleCandleGroup.add(candleMesh);
-        
-        // 2. Thick volumetric Edges (Neon Rods) for that ultra-crisp bold look
-        const halfH = candleHeight / 2;
-        const halfW = 1.0; // Matches geometry width
-        
-        // Draw the 12 edges of the box as volumetric neon cylinders!
-        const corners = [
-            [-halfW, -halfH, -halfW], [halfW, -halfH, -halfW],
-            [halfW, -halfH, halfW], [-halfW, -halfH, halfW],
-            [-halfW, halfH, -halfW], [halfW, halfH, -halfW],
-            [halfW, halfH, halfW], [-halfW, halfH, halfW]
-        ];
-        
-        const edgePairs = [
-            [0, 1], [1, 2], [2, 3], [3, 0], // Bottom
-            [4, 5], [5, 6], [6, 7], [7, 4], // Top
-            [0, 4], [1, 5], [2, 6], [3, 7]  // Connectors
-        ];
-        
-        edgePairs.forEach(pair => {
-            const c1 = new THREE.Vector3(...corners[pair[0]]).add(new THREE.Vector3(0, y, 0));
-            const c2 = new THREE.Vector3(...corners[pair[1]]).add(new THREE.Vector3(0, y, 0));
-            const edgeTube = createNeonTube(c1, c2, 0.08, candleColor);
-            singleCandleGroup.add(edgeTube);
-        });
-        
-        // 3. Thick Wicks (Cylinders)
-        const topWickMesh = createNeonTube(
-            new THREE.Vector3(0, y + candleHeight/2, 0),
-            new THREE.Vector3(0, y + candleHeight/2 + 2.2, 0),
-            0.08,
-            candleColor
-        );
-        const botWickMesh = createNeonTube(
-            new THREE.Vector3(0, y - candleHeight/2, 0),
-            new THREE.Vector3(0, y - candleHeight/2 - 2.2, 0),
-            0.08,
-            candleColor
-        );
-        singleCandleGroup.add(topWickMesh);
-        singleCandleGroup.add(botWickMesh);
+        const x = startX + i * stepX;
+        const isBullish = pattern[i % pattern.length];
 
-        // Hide initially (scale Y to near 0)
-        singleCandleGroup.scale.y = 0.0001;
-        singleCandleGroup.visible = false;
-        
-        chartGroup.add(singleCandleGroup);
-        chartCandles.push(singleCandleGroup);
+        // "big in size": Taller height variation (breakout bars, impulse waves)
+        let bodyH = 2.0 + Math.abs(Math.sin(i * 0.68)) * 3.2;
+        if (i % 7 === 0) bodyH = 6.4; // Tall breakout candle
+        if (i % 4 === 0) bodyH = 4.5; // Momentum candle
+        if (i % 5 === 0) bodyH = 1.1; // Small consolidation bar
+
+        const singleCandle = new THREE.Group();
+
+        // 1. Candlestick 3D Box Body (slender width, tall height)
+        const bodyGeom = new THREE.BoxGeometry(candleW, bodyH, candleD);
+        const bodyMesh = new THREE.Mesh(bodyGeom, isBullish ? bullishMat : bearishMat);
+        singleCandle.add(bodyMesh);
+
+        // 2. Candlestick Wicks (Upper & Lower)
+        const wickLen = bodyH + 2.4 + (i % 3) * 1.0;
+        const wickGeom = new THREE.CylinderGeometry(0.038, 0.038, wickLen, 6);
+        const wickMesh = new THREE.Mesh(wickGeom, isBullish ? wickBullMat : wickBearMat);
+        singleCandle.add(wickMesh);
+
+        // Subtle organic Z-depth variation
+        const z = -2.5 + Math.sin(i * 0.45) * 1.2;
+        const initialY = getChartBaseY(x);
+
+        singleCandle.position.set(x, initialY, z);
+        candleGroup.add(singleCandle);
+
+        candles.push({
+            group: singleCandle,
+            bodyMesh: bodyMesh,
+            x: x,
+            z: z,
+            bodyH: bodyH,
+            isBullish: isBullish,
+            bobSpeed: 1.1 + (i % 5) * 0.20,
+            bobPhase: i * 0.55,
+            bobAmp: 0.28 + (i % 4) * 0.14
+        });
     }
-    
-    // Initialize Trendline with the first 5 coordinates
-    const trendMat = new THREE.LineBasicMaterial({
-        color: 0x00f0ff,
-        linewidth: 4,
-        transparent: false,
-        opacity: 1.0
-    });
-    
-    trendLine = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(chartPoints.slice(0, 5)), 
-        trendMat
-    );
-    chartGroup.add(trendLine);
-    
-    // Scale up to span the whole screen width
-    chartGroup.scale.set(1.4, 1.4, 1.4);
-    chartGroup.position.set(0, 0, -8);
-    scene.add(chartGroup);
+
+    scene.add(candleGroup);
 }
 
-// -------------------------------------------------------------
-//   INTERACTIONS & RENDER LOOP
-// -------------------------------------------------------------
+// --------------------------------------------------------------------
+//   CAMERA FRAMING (CENTERED)
+// --------------------------------------------------------------------
+function updateCameraFraming() {
+    if (!camera) return;
+    const isMobile = window.innerWidth < 960;
+    if (isMobile) {
+        camera.position.set(0, 0.5, 58);
+        camera.lookAt(0, 0.5, 0);
+    } else {
+        camera.position.set(0, 0.8, 46);
+        camera.lookAt(0, 0.8, 0);
+    }
+}
 
+// --------------------------------------------------------------------
+//   INTERACTION EVENT LISTENERS
+// --------------------------------------------------------------------
 function onDocumentMouseMove(event) {
-    mouseX = (event.clientX - windowHalfX) / 100;
-    mouseY = (event.clientY - windowHalfY) / 100;
+    mouseX = (event.clientX - windowHalfX) / windowHalfX;
+    mouseY = (event.clientY - windowHalfY) / windowHalfY;
 }
 
 function onWindowResize() {
@@ -318,6 +266,7 @@ function onWindowResize() {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    updateCameraFraming();
 }
 
 function onWindowScroll() {
@@ -327,115 +276,76 @@ function onWindowScroll() {
     }
 }
 
-let is3DRunning = true;
+// --------------------------------------------------------------------
+//   ANIMATION LOOP: CONTINUOUS HORIZONTAL DRIFT & TICK BREATHING
+// --------------------------------------------------------------------
+let lastTimestamp = 0;
 
 function animate3D(time) {
     if (!is3DRunning) return;
     requestAnimationFrame(animate3D);
 
-    if (!renderer || !scene) return;
+    if (!renderer || !scene || !camera) return;
+
+    const delta = lastTimestamp ? Math.min((time - lastTimestamp) * 0.001, 0.1) : 0.016;
+    lastTimestamp = time;
 
     const elapsed = time * 0.001;
 
-    // 1. Volatile waves on the floor grid
+    // Movement speed: steady horizontal conveyor flow
+    const driftSpeed = 1.35; // Units per second
+    const minBoundX = -44;
+    const maxBoundX = 44;
+    const span = maxBoundX - minBoundX;
+
+    // 1. Update every candlestick position and elevation
+    for (let i = 0; i < candles.length; i++) {
+        const c = candles[i];
+
+        // Move candle continuously leftwards
+        c.x -= driftSpeed * delta;
+
+        // Wrap around seamlessly from left to right
+        if (c.x < minBoundX) {
+            c.x += span;
+        }
+
+        // Dynamically compute elevation along the chart profile curve
+        const baseY = getChartBaseY(c.x);
+
+        // Real-time market tick breathing oscillation
+        const bob = Math.sin(elapsed * c.bobSpeed + c.bobPhase) * c.bobAmp;
+
+        c.group.position.x = c.x;
+        c.group.position.y = baseY + bob;
+    }
+
+    // 2. Animate ambient floating dust particles (matching video)
     if (particleSystem) {
-        const positions = particleSystem.geometry.attributes.position.array;
-        let index = 0;
-        const cols = 50;
-        const rows = 40;
-
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                const primaryWave = Math.sin(c * 0.15 + elapsed * 1.5) * Math.cos(r * 0.15 + elapsed * 1.5) * 3.5;
-                const secondaryWave = Math.sin((c + r) * 0.08 + elapsed * 0.7) * 1.8;
-                
-                positions[index + 1] = primaryWave + secondaryWave - 14;
-                index += 3;
-            }
-        }
-        particleSystem.geometry.attributes.position.needsUpdate = true;
+        particleSystem.rotation.y = elapsed * 0.012;
+        particleSystem.position.y = Math.sin(elapsed * 0.25) * 0.35;
     }
 
-    // 2. Slow rotation / floating of atmospheric Market Dust
-    if (dustSystem) {
-        dustSystem.rotation.y = elapsed * 0.025;
-        dustSystem.rotation.x = Math.sin(elapsed * 0.04) * 0.04;
+    // 3. Subtle Parallax and Cursor Response
+    if (candleGroup) {
+        candleGroup.rotation.y = mouseX * 0.035;
+        candleGroup.rotation.x = -mouseY * 0.02;
     }
 
-    // 3. Scroll-Revealed Candles & Smooth Growing Trendline
-    const candleCount = 24;
-    const visibleFraction = 5.0 + currentScroll * (candleCount - 5);
-    const intPart = Math.floor(visibleFraction);
-    const fracPart = visibleFraction - intPart;
-    
-    // Set candle group visibilities and growth scales
-    for (let i = 0; i < candleCount; i++) {
-        const group = chartCandles[i];
-        if (i < intPart) {
-            group.visible = true;
-            group.scale.y += (1.0 - group.scale.y) * 0.15;
-        } 
-        else if (i === intPart) {
-            group.visible = true;
-            const targetScale = Math.max(0.0001, fracPart);
-            group.scale.y += (targetScale - group.scale.y) * 0.15;
-        } 
-        else {
-            group.visible = false;
-            group.scale.y = 0.0001;
-        }
-    }
+    // 3. Smooth Camera Lerp
+    const isMobile = window.innerWidth < 960;
+    const targetCamX = isMobile ? 0 : (mouseX * 1.8);
+    const targetCamY = isMobile ? 0.5 : (0.8 - mouseY * 0.8 - currentScroll * 8);
 
-    // Update dynamic growing trendline connecting active points
-    if (trendLine) {
-        let activePoints = chartPoints.slice(0, intPart);
-        
-        // Interpolate the next point segment smoothly along the path
-        if (intPart < candleCount && fracPart > 0) {
-            const lastPoint = chartPoints[intPart - 1];
-            const nextPoint = chartPoints[intPart];
-            const interpolatedPoint = new THREE.Vector3().lerpVectors(lastPoint, nextPoint, fracPart);
-            activePoints.push(interpolatedPoint);
-        }
-        
-        // Rebuild trendline geometry
-        trendLine.geometry.dispose();
-        trendLine.geometry = new THREE.BufferGeometry().setFromPoints(activePoints);
-    }
-
-    // 4. Parallax rotation of the central chart group
-    if (chartGroup) {
-        chartGroup.rotation.y = -0.05 + Math.cos(elapsed * 0.12) * 0.06;
-        chartGroup.position.y = Math.sin(elapsed * 0.35) * 0.5;
-    }
-
-    // 5. Pulsing lighting logic
-    if (pulsingLight) {
-        pulsingLight.intensity = 4.5 + Math.sin(elapsed * 3.5) * 2.0;
-        pulsingLight.position.y = 5 + Math.sin(elapsed) * 3.0;
-    }
-
-    // 6. Camera Coordinates path based on Scroll position
-    // Scroll goes 0.0 (top) to 1.0 (bottom)
-    const targetZ = 65 - (currentScroll * 40); // Zoom closer
-    const targetY = 18 - (currentScroll * 15);  // Pan down
-    const targetX = (currentScroll * 15);       // Center camera behind login card at bottom
-    
-    const targetRotationY = mouseX * 0.12 + (currentScroll * 0.20); 
-    const targetRotationX = -mouseY * 0.08 - (currentScroll * 0.30);
-
-    // Interpolate (Lerp)
-    camera.position.x += (targetX - camera.position.x) * 0.05;
-    camera.position.y += (targetY - camera.position.y) * 0.05;
-    camera.position.z += (targetZ - camera.position.z) * 0.05;
-
-    camera.rotation.y += (targetRotationY - camera.rotation.y) * 0.05;
-    camera.rotation.x += (targetRotationX - camera.rotation.x) * 0.05;
+    camera.position.x += (targetCamX - camera.position.x) * 0.05;
+    camera.position.y += (targetCamY - camera.position.y) * 0.05;
 
     renderer.render(scene, camera);
 }
 
-// Auto-run when the script loads
+// --------------------------------------------------------------------
+//   LIFECYCLE CONTROLS
+// --------------------------------------------------------------------
 window.addEventListener('load', () => {
     init3D();
     animate3D(0);

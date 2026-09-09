@@ -3,16 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Orbit Trading Terminal - 7-Agent AI Simulator</title>
+    <title>Orbit Trading Terminal — 12-Agent Autonomous AI Simulator</title>
     <!-- Google Fonts for premium typography -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <!-- FontAwesome for clean icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Three.js CDN for 3D Graphics -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <!-- TradingView Advanced Widget Script -->
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
-    <link rel="stylesheet" href="style.css">
+    <!-- Clerk JS SDK for Headless Authentication -->
+    <script
+        async
+        crossorigin="anonymous"
+        data-clerk-publishable-key="pk_test_bm90ZWQtc2tpbmstNTkzOC5jbGVyay5hY2NvdW50cy5kZXYk"
+        src="https://noted-skink-5938.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        type="text/javascript"></script>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="stylesheet" href="style.css?v=orbit_dashboard_v11">
 </head>
 <body>
 
@@ -23,80 +33,91 @@
     <!--   1. LANDING PAGE & SCROLLABLE PORTAL          -->
     <!-- ============================================== -->
     <div id="landing-page" class="page-view">
-        <!-- Floating Navigation Header -->
+        <!-- ============================================== -->
+        <!--   MODERN DRIBBLE-STYLE NAVIGATION HEADER       -->
+        <!-- ============================================== -->
         <header class="landing-header">
-            <div class="logo-area">
-                <i class="fa-solid fa-microchip logo-icon"></i>
-                <h2>ORBIT SYSTEMS</h2>
+            <div class="logo-area" onclick="window.scrollTo({top: 0, behavior: 'smooth'})" style="cursor: pointer;">
+                <div class="brand-badge-ring">
+                    <span class="brand-ring-inner"></span>
+                </div>
+                <div class="brand-text">
+                    <h2 class="brand-minimal-title">ORBIT</h2>
+                </div>
             </div>
-            <button id="nav-login-btn" class="glow-btn btn-secondary">
-                <i class="fa-solid fa-right-to-bracket"></i> Login
-            </button>
-        </header>
 
-        <!-- Hero Section -->
-        <section class="hero-section">
-            <h1 class="hero-title">Autonomous Agentic Trading</h1>
-            <p class="hero-subtitle">
-                A collaborative multi-agent AI system analyzing technical levels, news sentiment, and risk models to execute simulated trades in real-time.
-            </p>
-            <div class="hero-actions">
-                <button id="get-started-btn" class="glow-btn btn-primary btn-large">
-                    Get Started <i class="fa-solid fa-arrow-right"></i>
+            <nav class="landing-nav-links">
+                <a href="#hero-section" class="nav-link active">Home</a>
+                <a href="#login-section" class="nav-link">Platform</a>
+                <a href="#login-section" class="nav-link">Features</a>
+                <a href="#login-section" class="nav-link">About</a>
+                <a href="#login-section" class="nav-link">Contact</a>
+            </nav>
+
+            <div class="header-actions">
+                <button id="nav-login-btn" class="pill-btn-nav-started" onclick="scrollToLogin()">
+                    <span>Get Started</span>
                 </button>
             </div>
-            <div class="scroll-indicator">
-                <p>Scroll down to explore the AI Crew</p>
-                <i class="fa-solid fa-chevron-down bounce-icon"></i>
-            </div>
-        </section>
+        </header>
 
-        <!-- Features Scroll Section -->
-        <section class="features-section">
-            <h2 class="section-title">The 7-Agent AI Crew</h2>
-            <div class="features-grid">
-                <!-- Agent 1 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box purple-glow"><i class="fa-solid fa-arrows-to-line"></i></div>
-                    <h3>Levels Analyst</h3>
-                    <p>Detects historical support and resistance zones. Draws critical levels on the live TradingView chart.</p>
+        <!-- ============================================== -->
+        <!--   CINEMATIC EMERALD HERO SECTION               -->
+        <!-- ============================================== -->
+        <section id="hero-section" class="hero-section cinematic-hero">
+            <!-- Volumetric Emerald Cloud Layer -->
+            <div class="hero-cloud-atmosphere"></div>
+
+            <!-- Hero Top Flank Callouts -->
+            <div class="hero-flank-top-left">
+                <div class="flank-title">DISCIPLINE</div>
+                <div class="flank-title">CREATES</div>
+                <div class="flank-title">FREEDOM</div>
+                <div class="flank-accent-line"></div>
+            </div>
+
+            <div class="hero-flank-top-right">
+                <div class="flank-metric">+12.4% <i class="fa-solid fa-caret-up"></i></div>
+                <div class="flank-sub">BETTER DECISIONS</div>
+                <div class="flank-sub">BRIGHTER TOMORROW</div>
+                <div class="flank-accent-line"></div>
+            </div>
+
+            <!-- Main Monumental Centered Content -->
+            <div class="hero-centered-content">
+                <div class="hero-italic-trade">T R A D E</div>
+                <h1 class="hero-monumental-title">
+                    <span class="title-smarter">SMARTER.</span>
+                    <span class="title-risk-less">RISK LESS.</span>
+                </h1>
+
+                <p class="hero-center-desc">
+                    AI-powered market intelligence and risk-aware trading decisions.
+                </p>
+
+                <div class="hero-center-actions">
+                    <button id="get-started-btn" class="pill-btn-emerald" onclick="scrollToLogin()">
+                        <span>Get Started</span>
+                        <i class="fa-solid fa-arrow-right"></i>
+                    </button>
+                    <button class="pill-btn-demo" onclick="launchDemoDirect()">
+                        <i class="fa-regular fa-circle-play"></i>
+                        <span>Live Demo</span>
+                    </button>
                 </div>
-                <!-- Agent 2 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box yellow-glow"><i class="fa-solid fa-chart-bar"></i></div>
-                    <h3>Technical Analyst</h3>
-                    <p>Monitors moving averages, MACD crossovers, and RSI indexes to evaluate current price momentum.</p>
+            </div>
+
+            <div class="hero-flank-bottom-right">
+                <div class="flank-sub-bottom brand-sig">ORBIT</div>
+                <div class="flank-sub-line"></div>
+            </div>
+
+            <!-- Center Bottom Mouse Scroll Indicator -->
+            <div class="mouse-scroll-indicator" onclick="scrollToLogin()">
+                <div class="mouse-icon">
+                    <div class="mouse-wheel"></div>
                 </div>
-                <!-- Agent 3 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box blue-glow"><i class="fa-solid fa-newspaper"></i></div>
-                    <h3>Sentiment Analyst</h3>
-                    <p>Scrapes RSS feeds and reviews market headlines using Google Gemini to compute aggregate news sentiment.</p>
-                </div>
-                <!-- Agent 4 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box orange-glow"><i class="fa-solid fa-users"></i></div>
-                    <h3>Consensus Judge</h3>
-                    <p>Evaluates 10 advanced quantitative strategies and computes a unified consensus buy/sell vote.</p>
-                </div>
-                <!-- Agent 5 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box red-glow"><i class="fa-solid fa-shield-halved"></i></div>
-                    <h3>Risk Planner</h3>
-                    <p>Sets exact Stop Loss and Take Profit levels, ensuring a 1:2 risk ratio while capping exposure to 1% of equity.</p>
-                </div>
-                <!-- Agent 6 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box cyan-glow"><i class="fa-solid fa-circle-play"></i></div>
-                    <h3>Execution Broker</h3>
-                    <p>Simulates trade execution. Monitors the ticker feed and triggers pending orders instantly when price hits entry.</p>
-                </div>
-                <!-- Agent 7 -->
-                <div class="feature-card">
-                    <div class="feature-icon-box green-glow-card"><i class="fa-solid fa-user-shield"></i></div>
-                    <h3>P&L Guard</h3>
-                    <p>Monitors active positions, updates live P&L, moves Stop Loss to break-even at +1.5% profit, and manages exits.</p>
-                </div>
+                <span class="scroll-text">SCROLL TO EXPLORE</span>
             </div>
         </section>
 
@@ -125,13 +146,32 @@
                     <!-- ══════════════════════════════════════ -->
                     <!--   PANEL 1 — LOGIN                     -->
                     <!-- ══════════════════════════════════════ -->
+                    <!-- ══════════════════════════════════════ -->
+                    <!--   PANEL 1 — LOGIN                     -->
+                    <!-- ══════════════════════════════════════ -->
                     <div id="panel-login" class="auth-panel active">
+                        <!-- Clerk Social Login Button -->
+                        <div class="social-auth-group">
+                            <button type="button" class="clerk-social-btn" id="login-google-btn" onclick="handleClerkGoogleAuth()">
+                                <svg class="google-icon" viewBox="0 0 24 24" width="17" height="17">
+                                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                                </svg>
+                                <span>Continue with Google</span>
+                            </button>
+                            <div class="auth-divider">
+                                <span>or continue with credentials</span>
+                            </div>
+                        </div>
+
                         <form id="login-form" onsubmit="handleLogin(event)">
                             <div class="input-group">
-                                <label for="login-username">Username</label>
+                                <label for="login-username">Username or Email</label>
                                 <div class="input-wrapper">
                                     <i class="fa-solid fa-user input-icon"></i>
-                                    <input type="text" id="login-username" placeholder="Your username..." autocomplete="username" required>
+                                    <input type="text" id="login-username" placeholder="Your username or email..." autocomplete="username" required>
                                 </div>
                             </div>
                             <div class="input-group">
@@ -158,6 +198,22 @@
                     <!--   PANEL 2 — SIGN UP                   -->
                     <!-- ══════════════════════════════════════ -->
                     <div id="panel-signup" class="auth-panel">
+                        <!-- Clerk Social Signup Button -->
+                        <div class="social-auth-group">
+                            <button type="button" class="clerk-social-btn" id="signup-google-btn" onclick="handleClerkGoogleAuth()">
+                                <svg class="google-icon" viewBox="0 0 24 24" width="17" height="17">
+                                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                                </svg>
+                                <span>Continue with Google</span>
+                            </button>
+                            <div class="auth-divider">
+                                <span>or register credentials</span>
+                            </div>
+                        </div>
+
                         <form id="signup-form" onsubmit="handleSignup(event)">
                             <div class="input-group">
                                 <label for="signup-email">Gmail / Email</label>
@@ -203,41 +259,6 @@
                         </form>
                     </div>
 
-                    <!-- ══════════════════════════════════════ -->
-                    <!--   PANEL 3 — OTP VERIFICATION          -->
-                    <!-- ══════════════════════════════════════ -->
-                    <div id="panel-otp" class="auth-panel">
-                        <div class="otp-info">
-                            <div class="otp-icon-anim"><i class="fa-solid fa-envelope-open-text"></i></div>
-                            <p>We sent a <strong>6-digit code</strong> to<br><span id="otp-email-display" class="otp-email-text"></span></p>
-                            <p style="font-size: 11px; margin-top: 6px; color: var(--text-muted); opacity: 0.85;">(If you don't see it, please check your **Spam / Junk** folder)</p>
-                        </div>
-                        <form id="otp-form" onsubmit="handleVerifyOtp(event)">
-                            <div class="otp-input-group">
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d1" oninput="otpInputNext(this,'otp-d2')" onkeydown="otpInputBack(event,this,'')">
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d2" oninput="otpInputNext(this,'otp-d3')" onkeydown="otpInputBack(event,this,'otp-d1')">
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d3" oninput="otpInputNext(this,'otp-d4')" onkeydown="otpInputBack(event,this,'otp-d2')">
-                                <span class="otp-sep">—</span>
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d4" oninput="otpInputNext(this,'otp-d5')" onkeydown="otpInputBack(event,this,'otp-d3')">
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d5" oninput="otpInputNext(this,'otp-d6')" onkeydown="otpInputBack(event,this,'otp-d4')">
-                                <input type="text" class="otp-digit" maxlength="1" inputmode="numeric" pattern="[0-9]" id="otp-d6" oninput="otpInputNext(this,'')"    onkeydown="otpInputBack(event,this,'otp-d5')">
-                            </div>
-                            <div id="otp-error" class="auth-error hidden"></div>
-                            <div class="login-actions">
-                                <button type="submit" id="otp-submit-btn" class="glow-btn btn-primary">
-                                    <span>Verify Code</span> <i class="fa-solid fa-check-circle"></i>
-                                </button>
-                            </div>
-                        </form>
-                        <div class="otp-resend-row">
-                            <span id="otp-timer-text" class="otp-timer"></span>
-                            <button id="otp-resend-btn" class="otp-resend-link hidden" onclick="handleResendOtp()">
-                                Resend code
-                            </button>
-                        </div>
-                        <p class="auth-switch-hint" style="margin-top:12px"><a href="#" onclick="switchAuthTab('login')">← Back to Login</a></p>
-                    </div>
-
                 </div><!-- /.auth-card -->
             </div>
         </section>
@@ -252,10 +273,12 @@
             <!-- LEFT SIDEBAR -->
             <aside class="app-sidebar">
                 <div class="sidebar-brand">
-                    <i class="fa-solid fa-microchip brand-icon"></i>
+                    <div class="sidebar-brand-badge-ring">
+                        <span class="sidebar-brand-ring-inner"></span>
+                    </div>
                     <div class="brand-text">
-                        <h2>AETHER</h2>
-                        <span>12-AGENT TERMINAL</span>
+                        <h2 class="sidebar-brand-title">ORBIT</h2>
+                        <span class="sidebar-brand-sub">12-AGENT AI TERMINAL</span>
                     </div>
                 </div>
 
@@ -379,7 +402,7 @@
                                     <div class="crew-status-indicator">
                                         <div class="crew-status-dot green-glow"></div>
                                         <div class="crew-status-text">
-                                            <h3>Aether Crew Online</h3>
+                                            <h3>Orbit Crew Online</h3>
                                             <p>7 Autonomous agents monitoring risk, news sentiment, and technical levels.</p>
                                         </div>
                                     </div>
@@ -861,14 +884,249 @@
                             </form>
                         </div>
                     </div><!-- /tab-content-autotrade -->
+
+                    <!-- TAB 4: REPORTS PANE -->
+                    <div id="tab-content-reports" class="tab-content hidden-tab">
+
+                        <!-- REPORT TOOLBAR -->
+                        <div class="card report-toolbar">
+                            <div class="report-toolbar-left">
+                                <div class="card-title">
+                                    <i class="fa-solid fa-file-invoice-dollar header-icon"></i>
+                                    <span>Performance Report</span>
+                                </div>
+                                <span class="report-generated" id="report-generated">Not generated yet</span>
+                            </div>
+                            <div class="report-toolbar-right">
+                                <select id="report-filter-asset" class="report-select" title="Filter by asset">
+                                    <option value="all">All Assets</option>
+                                </select>
+                                <select id="report-filter-outcome" class="report-select" title="Filter by result">
+                                    <option value="all">All Results</option>
+                                    <option value="win">Wins Only</option>
+                                    <option value="loss">Losses Only</option>
+                                    <option value="open">Open / Pending</option>
+                                </select>
+                                <button id="report-refresh-btn" class="glow-btn btn-secondary report-btn" title="Reload from database">
+                                    <i class="fa-solid fa-rotate"></i> Refresh
+                                </button>
+                                <button id="report-export-csv" class="glow-btn btn-secondary report-btn" title="Download as CSV">
+                                    <i class="fa-solid fa-file-csv"></i> CSV
+                                </button>
+                                <button id="report-export-json" class="glow-btn btn-secondary report-btn" title="Download raw JSON">
+                                    <i class="fa-solid fa-file-code"></i> JSON
+                                </button>
+                                <button id="report-export-pdf" class="glow-btn report-btn" title="Print or save as PDF">
+                                    <i class="fa-solid fa-file-pdf"></i> PDF
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- KPI GRID -->
+                        <div class="report-kpi-grid" id="report-kpi-grid">
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Net Realized P&amp;L</span>
+                                <h2 class="report-kpi-value" id="rk-net-pnl">&#8377;0.00</h2>
+                                <span class="report-kpi-sub" id="rk-net-pnl-sub">no closed trades</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Win Rate</span>
+                                <h2 class="report-kpi-value text-cyan" id="rk-win-rate">0.0%</h2>
+                                <span class="report-kpi-sub" id="rk-win-rate-sub">0W / 0L</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Profit Factor</span>
+                                <h2 class="report-kpi-value" id="rk-profit-factor">&#8212;</h2>
+                                <span class="report-kpi-sub">gross profit / gross loss</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Expectancy / Trade</span>
+                                <h2 class="report-kpi-value" id="rk-expectancy">&#8377;0.00</h2>
+                                <span class="report-kpi-sub">average result per trade</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Max Drawdown</span>
+                                <h2 class="report-kpi-value text-red" id="rk-drawdown">&#8377;0.00</h2>
+                                <span class="report-kpi-sub" id="rk-drawdown-sub">0.0% of peak</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Avg Win / Avg Loss</span>
+                                <h2 class="report-kpi-value" id="rk-avg-ratio">&#8212;</h2>
+                                <span class="report-kpi-sub" id="rk-avg-sub">&#8377;0 / &#8377;0</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Best / Worst Trade</span>
+                                <h2 class="report-kpi-value" id="rk-best-worst">&#8377;0 / &#8377;0</h2>
+                                <span class="report-kpi-sub" id="rk-streaks">streaks 0W / 0L</span>
+                            </div>
+                            <div class="report-kpi card">
+                                <span class="report-kpi-label">Open Exposure</span>
+                                <h2 class="report-kpi-value text-yellow" id="rk-open">0</h2>
+                                <span class="report-kpi-sub" id="rk-open-sub">unrealized &#8377;0.00</span>
+                            </div>
+                        </div>
+
+                        <!-- CHARTS -->
+                        <div class="report-chart-grid">
+                            <div class="card report-chart-card report-chart-wide">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-chart-area header-icon"></i>
+                                        <span>Equity Curve &#8212; Cumulative Realized P&amp;L</span>
+                                    </div>
+                                </div>
+                                <div class="report-chart-body" id="chart-equity"></div>
+                            </div>
+
+                            <div class="card report-chart-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-chart-simple header-icon"></i>
+                                        <span>P&amp;L Per Trade</span>
+                                    </div>
+                                </div>
+                                <div class="report-chart-body" id="chart-pnl-bars"></div>
+                            </div>
+
+                            <div class="card report-chart-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-circle-half-stroke header-icon"></i>
+                                        <span>Win / Loss Split</span>
+                                    </div>
+                                </div>
+                                <div class="report-chart-body" id="chart-winloss"></div>
+                            </div>
+
+                            <div class="card report-chart-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-coins header-icon"></i>
+                                        <span>P&amp;L By Asset</span>
+                                    </div>
+                                </div>
+                                <div class="report-chart-body" id="chart-by-asset"></div>
+                            </div>
+
+                            <div class="card report-chart-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-calendar-days header-icon"></i>
+                                        <span>Monthly Performance</span>
+                                    </div>
+                                </div>
+                                <div class="report-chart-body" id="chart-by-month"></div>
+                            </div>
+                        </div>
+
+                        <!-- FULL TRADE LEDGER -->
+                        <div class="card report-table-card">
+                            <div class="card-header">
+                                <div class="card-title">
+                                    <i class="fa-solid fa-table-list header-icon"></i>
+                                    <span>Complete Trade Ledger</span>
+                                </div>
+                                <span class="report-row-count" id="report-row-count">0 trades</span>
+                            </div>
+                            <div class="report-table-wrap">
+                                <table class="report-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Date / Time</th>
+                                            <th>Asset</th>
+                                            <th>Side</th>
+                                            <th>Qty</th>
+                                            <th>Entry</th>
+                                            <th>Exit</th>
+                                            <th>Stop Loss</th>
+                                            <th>Target</th>
+                                            <th>Status</th>
+                                            <th>Result</th>
+                                            <th class="ta-right">P&amp;L</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="report-table-body">
+                                        <tr><td colspan="12" class="report-empty">Loading trade record...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                    </div><!-- /tab-content-reports -->
                     
                 </div><!-- /page-view -->
             </main>
         </div>
     </div>
     
+    <!-- ============================================== -->
+    <!--   SKILL DETAIL MODAL                           -->
+    <!-- ============================================== -->
+    <div id="skill-detail-modal" class="custom-modal hidden">
+        <div class="modal-backdrop" onclick="closeSkillModal()"></div>
+        <div class="modal-content glass-card">
+            <div class="modal-header">
+                <div class="modal-title-wrap">
+                    <span id="modal-skill-tag" class="skill-category-pill">Domain Skill</span>
+                    <h3 id="modal-skill-title">Skill Title</h3>
+                </div>
+                <button class="modal-close-btn" onclick="closeSkillModal()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <p id="modal-skill-desc" class="modal-desc">Detailed heuristic description</p>
+                <div class="modal-section-title"><i class="fa-solid fa-terminal"></i> Activation Heuristics & Rules</div>
+                <div id="modal-skill-rules" class="modal-code-box">Heuristic rules content</div>
+            </div>
+            <div class="modal-footer">
+                <button class="pill-btn-white" onclick="closeSkillModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================== -->
+    <!--   AI SIMULATION INTERACTIVE RUNNER MODAL       -->
+    <!-- ============================================== -->
+    <div id="ai-simulation-modal" class="custom-modal hidden">
+        <div class="modal-backdrop" onclick="closeSimModal()"></div>
+        <div class="modal-content glass-card sim-modal-content">
+            <div class="modal-header">
+                <div class="modal-title-wrap">
+                    <span class="skill-category-pill">12-Agent Deliberation</span>
+                    <h3>Live Multi-Agent Consensus Simulation</h3>
+                </div>
+                <button class="modal-close-btn" onclick="closeSimModal()"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <div class="sim-terminal-screen" id="sim-terminal-screen">
+                    <div class="sim-step" id="sim-step-1">
+                        <span class="sim-time">[00:01]</span> <span class="sim-agent text-purple">1. Levels Analyst:</span> Detected support zone at $67,850 (touch count: 4, unbroken).
+                    </div>
+                    <div class="sim-step" id="sim-step-2">
+                        <span class="sim-time">[00:02]</span> <span class="sim-agent text-yellow">2. Indicator Analyst:</span> RSI 14 = 42.1 (rebounding), MACD bullish histogram tick.
+                    </div>
+                    <div class="sim-step" id="sim-step-3">
+                        <span class="sim-time">[00:03]</span> <span class="sim-agent text-blue">3. News Analyst:</span> Gemini Sentiment Score = +0.72 ("Institutional ETF inflows surge").
+                    </div>
+                    <div class="sim-step" id="sim-step-4">
+                        <span class="sim-time">[00:04]</span> <span class="sim-agent text-cyan">4. Strategy Judge:</span> Evaluated 12 Strategies -> SMC BOS (BUY), ICT MSS (BUY), CVD Flow (BUY). Consensus: 9/12 BUY!
+                    </div>
+                    <div class="sim-step" id="sim-step-5">
+                        <span class="sim-time">[00:05]</span> <span class="sim-agent text-red">5. Risk Planner:</span> Entry $68,415 | SL $67,780 | TP $69,685 (1:2 R:R Ratio, 1% Equity Cap $62.42).
+                    </div>
+                    <div class="sim-step" id="sim-step-6">
+                        <span class="sim-time">[00:06]</span> <span class="sim-agent text-green">6. Execution Agent:</span> Simulated Order Dispatched. Monitoring live ticker stream.
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="pill-btn-white" onclick="launchDemoDirect()">Launch Full Terminal Live <i class="fa-solid fa-arrow-right"></i></button>
+            </div>
+        </div>
+    </div>
+
     <!-- Custom 3D Scene Controls script -->
-    <script src="three-scene.js"></script>
-    <script src="app.js?v=2"></script>
+    <script src="three-scene.js?v=orbit_news_v18"></script>
+    <script src="app.js?v=orbit_news_v18"></script>
 </body>
 </html>
