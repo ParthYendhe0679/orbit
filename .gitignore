@@ -7,8 +7,14 @@ __pycache__/
 .venv/
 venv/
 
-# Local SQLite fallback database
-backend/*.db
+# Local SQLite fallback database (legacy temporary)
+ai-service/*.db
+*.db
+
+# Go
+backend/bin/
+backend/backend
+*.exe
 
 # Node
 node_modules/

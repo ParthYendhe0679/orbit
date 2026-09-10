@@ -1,4 +1,4 @@
-import backend.database as db
+import database as db
 
 # Break-even rule: once a position is this far in profit, the stop is pulled up
 # to the entry price so the trade can no longer lose money.

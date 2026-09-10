@@ -15,23 +15,27 @@ from fastapi.staticfiles import StaticFiles
 import yfinance as yf
 import pandas as pd
 
+import sys
+# Ensure ai-service root directory is in sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 # Load .env before anything reads os.environ (news/LLM keys, DATABASE_URL).
 load_dotenv()
 
-import backend.database as db
-import backend.reporting as reporting
-from backend.agents.chart_analyst import find_support_resistance
-from backend.agents.indicator_analyst import analyze_indicators
-from backend.agents.news_analyst import analyze_sentiment
-from backend.agents.momentum_candle_analyst import analyze_momentum_candles
-from backend.agents.ema_ribbon_analyst import analyze_ema_ribbon
-from backend.agents.volatility_analyst import analyze_volatility
-from backend.agents.volume_flow_analyst import analyze_volume_flow
-from backend.agents.mtf_trend_analyst import analyze_mtf_trend
-from backend.agents.strategy_judge import evaluate_strategies
-from backend.agents.risk_planner import plan_trade
-from backend.agents.execution_agent import check_and_execute_trades
-from backend.agents.portfolio_monitor import monitor_positions
+import database as db
+import reporting as reporting
+from agents.chart_analyst import find_support_resistance
+from agents.indicator_analyst import analyze_indicators
+from agents.news_analyst import analyze_sentiment
+from agents.momentum_candle_analyst import analyze_momentum_candles
+from agents.ema_ribbon_analyst import analyze_ema_ribbon
+from agents.volatility_analyst import analyze_volatility
+from agents.volume_flow_analyst import analyze_volume_flow
+from agents.mtf_trend_analyst import analyze_mtf_trend
+from agents.strategy_judge import evaluate_strategies
+from agents.risk_planner import plan_trade
+from agents.execution_agent import check_and_execute_trades
+from agents.portfolio_monitor import monitor_positions
 
 # Seconds between price ticks in the live simulation loop.
 TICK_INTERVAL_SECONDS = 4
@@ -80,9 +84,14 @@ async def serve_root():
     return response
 
 
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "service": "ai-service", "version": "1.0.0"}
+
+
 @app.get("/api/news")
 def get_market_news(symbol: str = "BTC-USD"):
-    from backend.agents.news_analyst import get_headlines, BULLISH_WORDS, BEARISH_WORDS
+    from agents.news_analyst import get_headlines, BULLISH_WORDS, BEARISH_WORDS
     import re
     
     headlines = get_headlines(symbol)
@@ -118,7 +127,7 @@ async def get_global_market_news():
     """Fetch broad world stock market and financial news for the dashboard with in-memory caching."""
     global _GLOBAL_NEWS_CACHE
     import asyncio, re, time, urllib.request, urllib.parse, json, xml.etree.ElementTree as ET
-    from backend.agents.news_analyst import BULLISH_WORDS, BEARISH_WORDS
+    from agents.news_analyst import BULLISH_WORDS, BEARISH_WORDS
 
     now = time.time()
     if _GLOBAL_NEWS_CACHE["data"] and (now - _GLOBAL_NEWS_CACHE["timestamp"] < GLOBAL_NEWS_CACHE_TTL):
@@ -228,7 +237,7 @@ async def get_global_market_news():
 # ---------------------------------------------------------------------------
 from fastapi import HTTPException
 from pydantic import BaseModel
-from backend.auth import hash_password, verify_password, store_otp, verify_otp as auth_verify_otp, send_otp_email
+from auth import hash_password, verify_password, store_otp, verify_otp as auth_verify_otp, send_otp_email
 
 class RegisterRequest(BaseModel):
     username: str

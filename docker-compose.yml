@@ -1,16 +1,33 @@
 services:
-  trading-terminal:
+  backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    image: aether-trading-terminal:latest
-    container_name: aether_trading_terminal
+      dockerfile: ./backend/Dockerfile
+    image: mochatrade-backend:latest
+    container_name: mochatrade_backend
     ports:
       - "8000:8000"
     volumes:
-      # Bind mounts allow real-time code changes and SQLite database persistence
-      - ./backend:/app/backend
-      - ./frontend:/app/frontend
+      - ./frontend:/app/frontend:ro
+    environment:
+      - PORT=8000
+      - AI_SERVICE_URL=http://ai-service:8001
+      - FRONTEND_PATH=/app/frontend
+    depends_on:
+      - ai-service
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    image: mochatrade-ai-service:latest
+    container_name: mochatrade_ai_service
+    expose:
+      - "8001"
+    volumes:
+      # Bind mount for development and legacy SQLite persistence
+      - ./ai-service:/app
     env_file:
       - .env
     environment:

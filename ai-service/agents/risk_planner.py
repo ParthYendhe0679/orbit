@@ -1,4 +1,4 @@
-import backend.llm as llm
+import llm as llm
 
 # Fraction of total equity put at risk on a single trade.
 RISK_PER_TRADE_PCT = 0.01

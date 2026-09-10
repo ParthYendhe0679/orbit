@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-import backend.llm as llm
+import llm as llm
 
 # Number of quantitative strategies in the suite below. Kept in one place so
 # the logs, the LLM prompt and the neutral-fallback vote count can never drift

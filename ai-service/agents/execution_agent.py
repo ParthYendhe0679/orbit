@@ -1,4 +1,4 @@
-import backend.database as db
+import database as db
 
 # How far price may drift away from the planned entry before an unconfirmed
 # order is considered stale and withdrawn.

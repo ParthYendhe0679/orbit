@@ -13,7 +13,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import numpy as np
 
-import backend.llm as llm
+import llm as llm
 
 # ---------------------------------------------------------------------------
 # Sentiment keyword dictionaries
