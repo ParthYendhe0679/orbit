@@ -18,3 +18,8 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Temporary folders & backups
+temp_mochatrade/
+*.neon-backup
+*.backup

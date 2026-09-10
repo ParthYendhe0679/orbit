@@ -54,7 +54,7 @@ def init_db():
         )
         """)
         # Migrate existing Postgres user table if columns are missing
-        for col_name, col_type in [("email", "VARCHAR(255) UNIQUE"), ("password_hash", "VARCHAR(255)"), ("is_verified", "BOOLEAN NOT NULL DEFAULT FALSE")]:
+        for col_name, col_type in [("email", "VARCHAR(255) UNIQUE"), ("password_hash", "VARCHAR(255)"), ("is_verified", "BOOLEAN NOT NULL DEFAULT FALSE"), ("clerk_id", "VARCHAR(255) UNIQUE")]:
             try:
                 cursor.execute(f'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS {col_name} {col_type}')
             except Exception as e:
@@ -105,7 +105,7 @@ def init_db():
         # Migrate existing SQLite user table if columns are missing
         cursor.execute("PRAGMA table_info(user)")
         user_cols = [col[1] for col in cursor.fetchall()]
-        for col_def in [("email", "TEXT UNIQUE"), ("password_hash", "TEXT"), ("is_verified", "INTEGER NOT NULL DEFAULT 0")]:
+        for col_def in [("email", "TEXT UNIQUE"), ("password_hash", "TEXT"), ("is_verified", "INTEGER NOT NULL DEFAULT 0"), ("clerk_id", "TEXT UNIQUE")]:
             if col_def[0] not in user_cols:
                 try:
                     cursor.execute(f"ALTER TABLE user ADD COLUMN {col_def[0]} {col_def[1]}")
@@ -195,15 +195,16 @@ def get_or_create_user(username):
 # Auth-specific DB functions
 # ---------------------------------------------------------------------------
 
-def register_user(username, email, password_hash):
-    """Create a new unverified user. Returns user_id or None if duplicate."""
+def register_user(username, email, password_hash, is_verified=True):
+    """Create a new user. Returns user_id or None if duplicate."""
     conn = get_connection()
     cursor = get_cursor(conn)
     p = get_placeholder()
     u = get_user_table()
     try:
+        verified_val = ('TRUE' if IS_POSTGRES else 1) if is_verified else ('FALSE' if IS_POSTGRES else 0)
         cursor.execute(
-            f"INSERT INTO {u} (username, email, password_hash, is_verified, balance) VALUES ({p}, {p}, {p}, {'FALSE' if IS_POSTGRES else 0}, 1000000.0)",
+            f"INSERT INTO {u} (username, email, password_hash, is_verified, balance) VALUES ({p}, {p}, {p}, {verified_val}, 1000000.0)",
             (username, email, password_hash)
         )
         conn.commit()
@@ -268,6 +269,100 @@ def verify_user(email):
         return False
     mark_user_verified(user["id"])
     return True
+
+def get_user_by_clerk_id(clerk_id):
+    """Fetch full user record by Clerk user ID."""
+    if not clerk_id:
+        return None
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+    try:
+        cursor.execute(f"SELECT * FROM {u} WHERE clerk_id = {p}", (str(clerk_id).strip(),))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    except Exception as e:
+        print(f"get_user_by_clerk_id error: {e}")
+        return None
+    finally:
+        conn.close()
+
+def sync_login_user(email=None, username=None, clerk_id=None):
+    """
+    Finds or creates a user based on login parameters (clerk_id, email, username).
+    Ensures seamless database connection for OAuth & direct logins.
+    Returns full user dict.
+    """
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+    
+    clean_clerk_id = str(clerk_id).strip() if clerk_id else None
+    clean_email = email.lower().strip() if email else None
+    clean_username = username.strip() if username else None
+    
+    user = None
+    try:
+        # 1. Lookup by clerk_id
+        if clean_clerk_id:
+            cursor.execute(f"SELECT * FROM {u} WHERE clerk_id = {p}", (clean_clerk_id,))
+            row = cursor.fetchone()
+            if row:
+                user = dict(row)
+
+        # 2. Lookup by email
+        if not user and clean_email:
+            cursor.execute(f"SELECT * FROM {u} WHERE email = {p}", (clean_email,))
+            row = cursor.fetchone()
+            if row:
+                user = dict(row)
+                if clean_clerk_id and not user.get("clerk_id"):
+                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {'TRUE' if IS_POSTGRES else 1} WHERE id = {p}", (clean_clerk_id, user["id"]))
+                    conn.commit()
+                    user["clerk_id"] = clean_clerk_id
+
+        # 3. Lookup by username
+        if not user and clean_username:
+            cursor.execute(f"SELECT * FROM {u} WHERE username = {p}", (clean_username,))
+            row = cursor.fetchone()
+            if row:
+                user = dict(row)
+                if clean_clerk_id and not user.get("clerk_id"):
+                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {'TRUE' if IS_POSTGRES else 1} WHERE id = {p}", (clean_clerk_id, user["id"]))
+                    conn.commit()
+                    user["clerk_id"] = clean_clerk_id
+
+        # 4. User does not exist in DB — auto create verified trading account
+        if not user:
+            base_name = clean_username or (clean_email.split("@")[0] if clean_email else f"trader_{int(datetime.utcnow().timestamp())}")
+            final_username = base_name
+            cursor.execute(f"SELECT id FROM {u} WHERE username = {p}", (final_username,))
+            if cursor.fetchone():
+                import random
+                final_username = f"{base_name}_{random.randint(100, 999)}"
+
+            verified_val = True if IS_POSTGRES else 1
+            cursor.execute(
+                f"INSERT INTO {u} (username, email, clerk_id, is_verified, balance) VALUES ({p}, {p}, {p}, {p}, 1000000.0)",
+                (final_username, clean_email, clean_clerk_id, verified_val)
+            )
+            conn.commit()
+            if IS_POSTGRES:
+                cursor.execute(f"SELECT * FROM {u} WHERE username = {p}", (final_username,))
+                user = dict(cursor.fetchone())
+            else:
+                user_id = cursor.lastrowid
+                cursor.execute(f"SELECT * FROM {u} WHERE id = {p}", (user_id,))
+                user = dict(cursor.fetchone())
+
+        return user
+    except Exception as e:
+        print(f"sync_login_user error: {e}")
+        return None
+    finally:
+        conn.close()
 
 # --- Autotrade Bot Configuration Methods ---
 

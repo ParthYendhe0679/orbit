@@ -74,6 +74,15 @@ def _clean_symbol_for_query(symbol: str) -> str:
     return f"{symbol} stock market"
 
 
+import time
+
+# In-memory caches to guarantee sub-second responses and avoid rate limits
+_SYMBOL_HEADLINES_CACHE = {}
+_SYMBOL_SENTIMENT_CACHE = {}
+SYMBOL_HEADLINES_TTL = 180.0  # 3 minutes
+SYMBOL_SENTIMENT_TTL = 120.0  # 2 minutes
+
+
 # ---------------------------------------------------------------------------
 # Source 1: NewsAPI.org
 # ---------------------------------------------------------------------------
@@ -98,7 +107,7 @@ def _fetch_newsapi(symbol: str, log_func=None) -> list:
 
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "OrbitTradingTerminal/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
             data = json.loads(resp.read().decode("utf-8"))
 
         articles = data.get("articles", [])
@@ -142,7 +151,7 @@ def _fetch_yahoo_rss(symbol: str, log_func=None) -> list:
             rss_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         )
-        with urllib.request.urlopen(req, timeout=6) as response:
+        with urllib.request.urlopen(req, timeout=2.5) as response:
             xml_data = response.read()
 
         root = ET.fromstring(xml_data)
@@ -188,22 +197,30 @@ def _simulated_headlines(symbol: str) -> list:
 def get_headlines(symbol: str, log_func=None) -> list:
     """
     Fetch real news headlines for a given trading symbol.
-    Priority: NewsAPI.org → Yahoo Finance RSS → Simulated fallback
+    Priority: In-memory Cache → NewsAPI.org → Yahoo Finance RSS → Simulated fallback
     """
+    upper_sym = symbol.upper().strip()
+    now = time.time()
+    cached = _SYMBOL_HEADLINES_CACHE.get(upper_sym)
+    if cached and (now - cached["timestamp"] < SYMBOL_HEADLINES_TTL):
+        if log_func:
+            log_func("News Analyst", f"⚡ Returning {len(cached['headlines'])} cached headlines for '{symbol}'.")
+        return cached["headlines"]
+
     # Try NewsAPI.org first
     headlines = _fetch_newsapi(symbol, log_func)
-    if headlines:
-        return headlines
+    if not headlines:
+        # Try Yahoo Finance RSS
+        headlines = _fetch_yahoo_rss(symbol, log_func)
 
-    # Try Yahoo Finance RSS
-    headlines = _fetch_yahoo_rss(symbol, log_func)
-    if headlines:
-        return headlines
+    if not headlines:
+        # Offline fallback
+        if log_func:
+            log_func("News Analyst", "⚠️ All live sources failed. Using simulated headlines.")
+        headlines = _simulated_headlines(symbol)
 
-    # Offline fallback
-    if log_func:
-        log_func("News Analyst", "⚠️ All live sources failed. Using simulated headlines.")
-    return _simulated_headlines(symbol)
+    _SYMBOL_HEADLINES_CACHE[upper_sym] = {"headlines": headlines, "timestamp": now}
+    return headlines
 
 
 # ---------------------------------------------------------------------------
@@ -225,9 +242,17 @@ def analyze_sentiment_offline(headlines: list) -> float:
 # Public function: analyze_sentiment (used by main agent pipeline)
 # ---------------------------------------------------------------------------
 def analyze_sentiment(symbol: str, log_func=None) -> dict:
+    upper_sym = symbol.upper().strip()
+    now = time.time()
+    cached_sent = _SYMBOL_SENTIMENT_CACHE.get(upper_sym)
+    if cached_sent and (now - cached_sent["timestamp"] < SYMBOL_SENTIMENT_TTL):
+        return cached_sent["res"]
+
     headlines = get_headlines(symbol, log_func)
     if not headlines:
-        return {"score": 0.0, "headlines": []}
+        res = {"score": 0.0, "headlines": []}
+        _SYMBOL_SENTIMENT_CACHE[upper_sym] = {"res": res, "timestamp": now}
+        return res
 
     score = 0.0
     used_gemini = False
@@ -269,4 +294,6 @@ def analyze_sentiment(symbol: str, log_func=None) -> dict:
                  f"📊 Analyzed {len(headlines)} headlines via {source}. "
                  f"Sentiment: {label} ({score:+.2f})")
 
-    return {"score": score, "headlines": headlines}
+    res = {"score": score, "headlines": headlines}
+    _SYMBOL_SENTIMENT_CACHE[upper_sym] = {"res": res, "timestamp": now}
+    return res
