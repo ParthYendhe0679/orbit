@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -12,9 +13,22 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mochatrade/backend/botsched"
 	"github.com/mochatrade/backend/handlers"
 	"github.com/mochatrade/backend/proxy"
 )
+
+// botWakeHook forwards to next, then nudges the bot scheduler after a bot
+// start/stop/config request so the change is picked up immediately instead of
+// on the next poll.
+func botWakeHook(next http.Handler, scheduler *botsched.Supervisor) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if scheduler != nil && r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/bot") {
+			scheduler.Wake()
+		}
+	})
+}
 
 // resolvePath checks multiple candidate locations to find a directory
 func resolvePath(candidates ...string) string {
@@ -37,7 +51,7 @@ func main() {
 
 	aiServiceURL := os.Getenv("AI_SERVICE_URL")
 	if aiServiceURL == "" {
-		aiServiceURL = "http://localhost:8001"
+		aiServiceURL = "http://127.0.0.1:8001"
 	}
 
 	log.Printf("[gateway] Initializing Go Backend Gateway on port %s", port)
@@ -64,19 +78,45 @@ func main() {
 	if err != nil {
 		log.Fatalf("[gateway] Failed to create HTTP reverse proxy: %v", err)
 	}
-	wsProxy := proxy.NewWebSocketProxy(aiServiceURL)
+	internalToken := strings.TrimSpace(os.Getenv("ORBIT_INTERNAL_TOKEN"))
+	if internalToken == "" {
+		log.Printf("[gateway] ORBIT_INTERNAL_TOKEN not set: /internal/* only accepts loopback callers")
+	}
+
+	// Browser sockets are registered by user so user-scoped events (bot
+	// activity) can be pushed from here.
+	userHub := proxy.NewUserHub()
+	wsProxy := proxy.NewWebSocketProxy(aiServiceURL, userHub)
+
+	// Auto-Trade Bot scheduler: all bot concurrency (per-session goroutines,
+	// bounded parallelism, per-symbol single-flight analysis, leader lease,
+	// graceful stop) runs here; the ai-service executes single steps.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	var scheduler *botsched.Supervisor
+	var schedulerStats func() map[string]any
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("BOT_SCHEDULER_ENABLED")), "false") {
+		scheduler = botsched.New(botsched.Config{}, botsched.NewHTTPEngine(aiServiceURL, internalToken))
+		schedulerStats = scheduler.Stats
+		go scheduler.Run(rootCtx)
+		log.Printf("[gateway] Auto-Trade Bot scheduler running (lease owner %s)", scheduler.Owner())
+	}
 
 	mux := http.NewServeMux()
 
 	// 1. Health check endpoint (reports Go status and probes Python AI status)
 	mux.HandleFunc("/health", handlers.HealthHandler(aiServiceURL))
+	mux.HandleFunc("/health/bot-scheduler", handlers.BotSchedulerStatsHandler(schedulerStats))
 
 	// 2. WebSocket endpoint (transparent proxy to AI service preserving contract)
 	mux.HandleFunc("/ws", wsProxy)
 
 	// 3. REST API reverse proxy (/api/*)
-	mux.Handle("/api/", httpProxy)
+	mux.Handle("/api/", botWakeHook(httpProxy, scheduler))
 	mux.Handle("/api", httpProxy)
+
+	// 4. Internal: ai-service -> gateway user-scoped event fan-out
+	mux.HandleFunc("/internal/events/publish", handlers.PublishUserEventHandler(userHub, internalToken))
 
 	// 4. Static node_modules (if present)
 	if nodeModulesDir != "" {
@@ -136,6 +176,7 @@ func main() {
 	<-quit
 
 	log.Printf("[gateway] Shutting down gateway server...")
+	rootCancel() // bot scheduler: finish in-flight steps, start no new ones
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -101,3 +101,23 @@ class RiskEvaluationResult(BaseModel):
     safety_factors: List[SafetyFactor] = Field(default_factory=list, description="Specific stabilizing and positive factors")
     unavailable_dimensions: List[str] = Field(default_factory=list, description="Names of any dimensions that could not be evaluated")
     diagnostics: RiskDiagnostics = Field(..., description="Operational performance metrics")
+
+
+class BotGateCheck(BaseModel):
+    """One pass/fail check in the Auto-Trade Bot entry gate."""
+    check_id: str = Field(..., description="Stable check identifier")
+    passed: bool = Field(..., description="True when the check allows the entry")
+    detail: str = Field(..., description="Factual explanation with the values compared")
+
+
+class BotTradeGateResult(BaseModel):
+    """
+    Risk Guard verdict on whether an Auto-Trade Bot session may open a candidate trade.
+    Combines the session's limits (target, max loss, allocation) with the market
+    analysis risk, decision clarity and opportunity level for the symbol.
+    """
+    symbol: str = Field(..., description="Candidate symbol")
+    approved: bool = Field(..., description="True only when every check passed")
+    checks: List[BotGateCheck] = Field(default_factory=list, description="Every check, in evaluation order")
+    rejections: List[RiskFactor] = Field(default_factory=list, description="Failed checks as risk factors")
+    limit_breached: Optional[str] = Field(default=None, description="'TARGET_REACHED' or 'MAX_LOSS_REACHED' when a session limit blocks entries")

@@ -165,8 +165,8 @@ function switchToTab(tabName) {
         if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
         if(tabContentReports) tabContentReports.classList.add("hidden-tab");
         if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
-        contentHeaderTitle.textContent = "Auto-Trade Bot Configuration";
-        loadBotConfig();
+        contentHeaderTitle.textContent = "Auto-Trade Bot";
+        initBotControlCenter();
     } else if (tabName === "manage-trades") {
         if(menuBtnManageTrades) menuBtnManageTrades.classList.add("active");
         menuBtnDashboard.classList.remove("active");
@@ -237,64 +237,575 @@ if (menuBtnCopilot) {
     menuBtnCopilot.addEventListener("click", () => switchToTab("copilot"));
 }
 
-// Auto-Trade Bot Logic
-const autotradeSaveBtn = document.getElementById("autotrade-save-btn");
-const autotradeStatusText = document.getElementById("autotrade-status-text");
+// -------------------------------------------------------------
+//   AUTO-TRADE BOT CONTROL CENTER
+// -------------------------------------------------------------
+// Every value on this page comes from the backend: /api/bot/* for sessions,
+// configuration and history, plus "bot_event" / "bot_session_updated"
+// messages on the /ws socket. The Go gateway schedules the bot and fans the
+// events out; nothing here is simulated in the browser.
 
-async function loadBotConfig() {
-    if (!currentUserId) return;
+const BOT_LIVE_STATES = ["STARTING", "SCANNING", "ANALYZING", "OPPORTUNITY_FOUND", "TRADE_ACTIVE", "WAITING", "STOPPING"];
+const BOT_ACTIVITY_MAX = 150;
+const BOT_EVENT_ICONS = {
+    STATE_CHANGED: "fa-solid fa-shuffle",
+    SESSION_RECOVERED: "fa-solid fa-rotate-right",
+    SCAN_STARTED: "fa-solid fa-magnifying-glass-chart",
+    MARKET_DATA_UPDATED: "fa-solid fa-chart-column",
+    MARKET_DATA_FAILED: "fa-solid fa-plug-circle-xmark",
+    AGENTS_COMPLETED: "fa-solid fa-robot",
+    STRATEGIES_COMPLETED: "fa-solid fa-chess-knight",
+    RISK_EVALUATED: "fa-solid fa-shield-halved",
+    OPPORTUNITY_EVALUATED: "fa-solid fa-gauge-high",
+    DECISION_READY: "fa-solid fa-scale-balanced",
+    NO_OPPORTUNITY: "fa-solid fa-hourglass-half",
+    OPPORTUNITY_DETECTED: "fa-solid fa-crosshairs",
+    RISK_APPROVED: "fa-solid fa-circle-check",
+    RISK_REJECTED: "fa-solid fa-ban",
+    EXECUTION_REJECTED: "fa-solid fa-triangle-exclamation",
+    TRADE_OPENED: "fa-solid fa-bolt",
+    POSITION_MANAGED: "fa-solid fa-sliders",
+    TRADE_CLOSED: "fa-solid fa-flag-checkered",
+    SCAN_COMPLETED: "fa-solid fa-check-double",
+    TARGET_REACHED: "fa-solid fa-trophy",
+    MAX_LOSS_REACHED: "fa-solid fa-hand",
+    ERROR: "fa-solid fa-circle-exclamation",
+};
+
+let _botUniverse = null;
+let _botSession = null;
+let _botConfig = null;
+let _botAvailableBalance = null;
+let _botSelectedAssets = new Set();
+let _botActiveTradesCache = [];
+let _botPollTimer = null;
+let _botBusy = false;
+
+function botUserId() {
+    return currentUserId || localStorage.getItem("orbit_user_id") || null;
+}
+
+function botIsLive(session) {
+    return !!(session && BOT_LIVE_STATES.includes(session.status));
+}
+
+async function botFetch(url, options) {
+    const res = await fetch(url, options);
+    let data = {};
+    try { data = await res.json(); } catch (e) { /* non-JSON error body */ }
+    if (!res.ok || data.ok === false) {
+        throw new Error(typeof data.detail === "string" ? data.detail : (data.error || `Request failed (${res.status})`));
+    }
+    return data;
+}
+
+function botPost(url, body) {
+    return botFetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+function botTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return isNaN(d) ? "—" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function botDateTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return isNaN(d) ? "—" : d.toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function botSigned(value) {
+    const n = Number(value || 0);
+    return `${n >= 0 ? "+" : ""}${formatINR(n)}`;
+}
+
+async function initBotControlCenter() {
+    const uid = botUserId();
+    if (!uid) return;
     try {
-        const res = await fetch(`/api/bot-config?user_id=${currentUserId}`);
-        const data = await res.json();
-        if (data.ok && data.config) {
-            document.getElementById("autotrade-assets").value = data.config.assets;
-            document.getElementById("autotrade-capital").value = data.config.total_capital;
-            document.getElementById("autotrade-min-profit").value = data.config.min_profit_target;
-            document.getElementById("autotrade-max-profit").value = data.config.max_profit_target;
-            document.getElementById("autotrade-toggle").checked = !!data.config.is_active;
-            
-            autotradeStatusText.textContent = data.config.is_active ? "Running — scanning market..." : "Currently stopped";
+        const universe = _botUniverse ? null : botFetch(`/api/bot/universe?user_id=${encodeURIComponent(uid)}`);
+        await refreshBotControlCenter(true, universe);
+    } catch (err) {
+        showBotConfigError(err.message);
+    }
+    startBotPolling();
+}
+window.initBotControlCenter = initBotControlCenter;
+
+async function refreshBotControlCenter(populateForm = false, universeRequest = null) {
+    const uid = botUserId();
+    if (!uid) return;
+    // Independent requests run together; only the activity feed needs the session id.
+    const histories = Promise.allSettled([loadBotTradeHistory(), loadBotSessionHistory()]);
+    const [data, universe] = await Promise.all([
+        botFetch(`/api/bot/session/current?user_id=${encodeURIComponent(uid)}`),
+        universeRequest || Promise.resolve(_botUniverse),
+    ]);
+    if (universe) _botUniverse = universe;
+    _botConfig = data.config || null;
+    _botAvailableBalance = data.available_balance;
+    if (populateForm || !document.querySelector("#bot-market option")) populateBotForm();
+    renderBotSession(data.session, data.scheduler_online);
+    renderBotBalanceHint();
+    if (data.session) {
+        await loadBotActivity(data.session.id);
+    } else {
+        renderBotActivity([]);
+    }
+    await histories;
+}
+window.refreshBotControlCenter = refreshBotControlCenter;
+
+function startBotPolling() {
+    // WebSocket pushes are the primary update path; this is a safety net while
+    // the tab is visible (e.g. right after a socket reconnect).
+    clearInterval(_botPollTimer);
+    _botPollTimer = setInterval(async () => {
+        if (!tabContentAutotrade || tabContentAutotrade.classList.contains("hidden-tab")) return;
+        const uid = botUserId();
+        if (!uid) return;
+        try {
+            const data = await botFetch(`/api/bot/session/current?user_id=${encodeURIComponent(uid)}`);
+            _botAvailableBalance = data.available_balance;
+            renderBotBalanceHint();
+            renderBotSession(data.session, data.scheduler_online);
+        } catch (e) { /* retry on the next tick */ }
+    }, 15000);
+}
+
+function populateBotForm() {
+    if (!_botUniverse) return;
+    const cats = _botUniverse.categories || [];
+    const policy = _botUniverse.policy || {};
+    const cfg = _botConfig || {};
+    const marketSel = document.getElementById("bot-market");
+    const levSel = document.getElementById("bot-leverage");
+    if (!marketSel || !levSel) return;
+
+    const preferred = cats.find(c => c.supported && c.id === cfg.market_category) || cats.find(c => c.supported);
+    marketSel.innerHTML = cats.map(c =>
+        `<option value="${esc(c.id)}" ${c.supported ? "" : "disabled"} ${preferred && c.id === preferred.id ? "selected" : ""}>` +
+        `${esc(c.label)}${c.supported ? ` (${c.assets.length})` : " — coming soon"}</option>`
+    ).join("");
+
+    const allowed = new Set(((preferred && preferred.assets) || []).map(a => a.symbol.toUpperCase()));
+    _botSelectedAssets = new Set((cfg.assets_list || []).map(s => String(s).toUpperCase()).filter(s => allowed.has(s)));
+
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined && v !== null) el.value = v; };
+    setVal("bot-capital", cfg.allocated_capital);
+    setVal("bot-target", cfg.target_profit);
+    setVal("bot-maxloss", cfg.max_loss);
+
+    const levels = policy.supported_leverage || [1];
+    const cfgLev = Number(cfg.leverage || 1);
+    levSel.innerHTML = levels.map(l => `<option value="${Number(l)}" ${Number(l) === cfgLev ? "selected" : ""}>${Number(l)}x</option>`).join("");
+    renderBotAssetChips();
+    renderBotBalanceHint();
+}
+
+function renderBotAssetChips() {
+    const wrap = document.getElementById("bot-asset-chips");
+    const marketSel = document.getElementById("bot-market");
+    if (!wrap || !marketSel || !_botUniverse) return;
+    const cat = (_botUniverse.categories || []).find(c => c.id === marketSel.value);
+    const locked = botIsLive(_botSession);
+    if (!cat || !cat.supported) {
+        wrap.innerHTML = `<div class="bot-chip-empty">${esc((cat && cat.reason) || "Select a supported market.")}</div>`;
+        return;
+    }
+    wrap.innerHTML = cat.assets.map(a => {
+        const sym = a.symbol.toUpperCase();
+        return `<button type="button" class="bot-asset-chip${_botSelectedAssets.has(sym) ? " selected" : ""}" ${locked ? "disabled" : ""} data-symbol="${esc(sym)}" title="${esc(a.name)}">
+                    <strong>${esc(sym)}</strong><span>${esc(a.name)}</span>
+                </button>`;
+    }).join("");
+    wrap.querySelectorAll(".bot-asset-chip").forEach(btn => {
+        btn.addEventListener("click", () => toggleBotAsset(btn.dataset.symbol));
+    });
+    safeText(document.getElementById("bot-assets-hint"), `${_botSelectedAssets.size} selected`);
+}
+
+function onBotMarketChange() {
+    _botSelectedAssets = new Set();
+    renderBotAssetChips();
+}
+window.onBotMarketChange = onBotMarketChange;
+
+function toggleBotAsset(symbol) {
+    if (botIsLive(_botSession)) return;
+    if (_botSelectedAssets.has(symbol)) _botSelectedAssets.delete(symbol);
+    else _botSelectedAssets.add(symbol);
+    renderBotAssetChips();
+}
+
+function renderBotBalanceHint() {
+    const ok = _botAvailableBalance !== null && _botAvailableBalance !== undefined;
+    safeText(document.getElementById("bot-balance-hint"), ok ? `available ${formatINR(_botAvailableBalance)}` : "");
+}
+
+function setBotCapitalMax() {
+    const el = document.getElementById("bot-capital");
+    if (el && _botAvailableBalance) el.value = Math.floor(Number(_botAvailableBalance) * 100) / 100;
+}
+window.setBotCapitalMax = setBotCapitalMax;
+
+function readBotForm() {
+    return {
+        market_category: document.getElementById("bot-market")?.value || "",
+        assets: [..._botSelectedAssets],
+        allocated_capital: parseFloat(document.getElementById("bot-capital")?.value),
+        target_profit: parseFloat(document.getElementById("bot-target")?.value),
+        max_loss: parseFloat(document.getElementById("bot-maxloss")?.value),
+        leverage: parseFloat(document.getElementById("bot-leverage")?.value || "1"),
+    };
+}
+
+// Convenience checks only — the server re-validates everything.
+function botFormProblem(cfg) {
+    if (!cfg.assets.length) return "Select at least one asset.";
+    for (const [key, label] of [["allocated_capital", "Allocated capital"], ["target_profit", "Target profit"], ["max_loss", "Max loss"]]) {
+        if (!(cfg[key] > 0)) return `${label} must be greater than zero.`;
+    }
+    if (_botAvailableBalance !== null && _botAvailableBalance !== undefined && cfg.allocated_capital > Number(_botAvailableBalance)) {
+        return `Allocated capital exceeds your available balance (${formatINR(_botAvailableBalance)}).`;
+    }
+    return null;
+}
+
+function showBotConfigError(message) {
+    const el = document.getElementById("bot-config-error");
+    if (!el) return;
+    el.textContent = message || "";
+    el.classList.toggle("hidden", !message);
+}
+
+async function saveBotConfig() {
+    const uid = botUserId();
+    if (!uid) return;
+    const cfg = readBotForm();
+    const problem = botFormProblem(cfg);
+    if (problem) { showBotConfigError(problem); return; }
+    const btn = document.getElementById("bot-save-btn");
+    const original = btn ? btn.innerHTML : "";
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...'; }
+    try {
+        const data = await botPost("/api/bot-config", { user_id: Number(uid), ...cfg });
+        _botConfig = { ...(_botConfig || {}), ...data.config, assets_list: data.config.assets };
+        showBotConfigError(null);
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-check"></i> Saved';
+    } catch (err) {
+        showBotConfigError(err.message);
+    } finally {
+        setTimeout(() => { if (btn) { btn.innerHTML = original; updateBotButtons(); } }, 1200);
+    }
+}
+window.saveBotConfig = saveBotConfig;
+
+async function startBotSession() {
+    const uid = botUserId();
+    if (!uid || _botBusy) return;
+    const cfg = readBotForm();
+    const problem = botFormProblem(cfg);
+    if (problem) { showBotConfigError(problem); return; }
+    _botBusy = true;
+    updateBotButtons();
+    try {
+        const data = await botPost("/api/bot/session/start", { user_id: Number(uid), ...cfg });
+        showBotConfigError(null);
+        renderBotSession(data.session, data.session ? data.session.scheduler_online : undefined);
+        if (data.session) await loadBotActivity(data.session.id);
+        loadBotSessionHistory();
+    } catch (err) {
+        showBotConfigError(err.message);
+    } finally {
+        _botBusy = false;
+        updateBotButtons();
+    }
+}
+window.startBotSession = startBotSession;
+
+async function stopBotSession() {
+    const uid = botUserId();
+    if (!uid || _botBusy) return;
+    if (!confirm("Stop the bot? It stops scanning and opening trades. Open auto-trades stay open and remain manageable.")) return;
+    _botBusy = true;
+    updateBotButtons();
+    try {
+        const data = await botPost("/api/bot/session/stop", { user_id: Number(uid) });
+        renderBotSession(data.session, data.session ? data.session.scheduler_online : undefined);
+    } catch (err) {
+        showBotConfigError(err.message);
+    } finally {
+        _botBusy = false;
+        updateBotButtons();
+    }
+}
+window.stopBotSession = stopBotSession;
+
+function updateBotButtons() {
+    const live = botIsLive(_botSession);
+    const startBtn = document.getElementById("bot-start-btn");
+    const stopBtn = document.getElementById("bot-stop-btn");
+    if (startBtn) startBtn.disabled = _botBusy || live;
+    if (stopBtn) stopBtn.disabled = _botBusy || !live || (_botSession && _botSession.status === "STOPPING");
+    const lock = document.getElementById("bot-config-lock");
+    if (lock) lock.classList.toggle("hidden", !live);
+    ["bot-market", "bot-capital", "bot-target", "bot-maxloss", "bot-leverage", "bot-save-btn", "bot-max-btn"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = live;
+    });
+    document.querySelectorAll(".bot-asset-chip").forEach(b => { b.disabled = live; });
+}
+
+function setBotBar(id, pct) {
+    const el = document.getElementById(id);
+    if (el) el.style.width = `${Math.max(0, Math.min(100, Number(pct) || 0))}%`;
+}
+
+function renderBotSession(session, schedulerOnline) {
+    _botSession = session || null;
+    const s = _botSession;
+    const status = s ? s.status : "STOPPED";
+
+    const pill = document.getElementById("bot-status-pill");
+    if (pill) pill.className = `bot-status-pill state-${status}`;
+    safeText(document.getElementById("bot-status-text"), status.replace(/_/g, " "));
+
+    const sched = document.getElementById("bot-scheduler-pill");
+    if (sched && schedulerOnline !== undefined && schedulerOnline !== null) {
+        sched.textContent = schedulerOnline ? "GO SCHEDULER ONLINE" : "GO SCHEDULER OFFLINE";
+        sched.classList.toggle("online", !!schedulerOnline);
+        sched.classList.toggle("offline", !schedulerOnline);
+    }
+
+    const meta = document.getElementById("bot-session-meta");
+    if (meta) {
+        if (!s) {
+            meta.textContent = "No session yet. Configure the bot below and start it.";
+        } else {
+            const parts = [`Session #${s.id}`, s.market_category, (s.assets || []).join(", "), `${Number(s.leverage)}x`, `started ${botDateTime(s.started_at)}`];
+            if (s.scan_count) parts.push(`${s.scan_count} scan${s.scan_count === 1 ? "" : "s"}`);
+            if (s.entries_allowed && s.next_scan_in_seconds !== null && s.next_scan_in_seconds !== undefined) {
+                parts.push(s.next_scan_in_seconds > 0 ? `next scan in ~${Math.round(s.next_scan_in_seconds)}s` : "scan due");
+            }
+            if (!botIsLive(s) && s.stopped_at) parts.push(`ended ${botDateTime(s.stopped_at)}`);
+            if (s.stop_reason && !s.entries_allowed) parts.push(s.stop_reason);
+            if (s.last_error) parts.push(`error: ${s.last_error}`);
+            meta.textContent = parts.filter(Boolean).join("  ·  ");
         }
-    } catch (e) {
-        console.error("Failed to load bot config:", e);
+    }
+
+    const set = (id, v) => safeText(document.getElementById(id), v);
+    if (!s) {
+        ["bot-kpi-allocated", "bot-kpi-available", "bot-kpi-pnl", "bot-kpi-target", "bot-kpi-loss", "bot-kpi-trades"].forEach(id => set(id, "—"));
+        ["bot-kpi-allocated-sub", "bot-kpi-used", "bot-kpi-pnl-sub", "bot-kpi-target-sub", "bot-kpi-loss-sub", "bot-kpi-trades-sub"].forEach(id => set(id, ""));
+        setBotBar("bot-target-bar", 0);
+        setBotBar("bot-loss-bar", 0);
+        renderBotActiveTrades([]);
+        updateBotButtons();
+        renderBotAssetChips();
+        return;
+    }
+    set("bot-kpi-allocated", formatINR(s.allocated_capital));
+    set("bot-kpi-allocated-sub", `${Number(s.leverage)}x leverage`);
+    set("bot-kpi-available", formatINR(s.available_bot_capital));
+    set("bot-kpi-used", `${formatINR(s.used_capital)} in open margin`);
+    const pnlEl = document.getElementById("bot-kpi-pnl");
+    if (pnlEl) {
+        pnlEl.textContent = botSigned(s.total_pnl);
+        pnlEl.className = `bot-kpi-val ${Number(s.total_pnl) >= 0 ? "text-green" : "text-red"}`;
+    }
+    set("bot-kpi-pnl-sub", `realized ${botSigned(s.realized_pnl)} · unrealized ${botSigned(s.unrealized_pnl)}`);
+    set("bot-kpi-target", formatINR(s.target_profit));
+    set("bot-kpi-target-sub", `${Number(s.target_progress_pct).toFixed(1)}% reached (realized)`);
+    setBotBar("bot-target-bar", s.target_progress_pct);
+    set("bot-kpi-loss", `${formatINR(s.session_loss)} / ${formatINR(s.max_loss)}`);
+    set("bot-kpi-loss-sub", `${Number(s.loss_progress_pct).toFixed(1)}% of limit (${String(s.loss_basis || "").replace(/_/g, " ")})`);
+    setBotBar("bot-loss-bar", s.loss_progress_pct);
+    set("bot-kpi-trades", String(s.total_trades));
+    set("bot-kpi-trades-sub", `${s.winning_trades}W / ${s.losing_trades}L · ${s.open_trades} open`);
+
+    renderBotActiveTrades(s.active_trades || []);
+    updateBotButtons();
+    renderBotAssetChips();
+}
+
+function renderBotActiveTrades(trades) {
+    _botActiveTradesCache = trades;
+    safeText(document.getElementById("bot-active-count"), String(trades.length));
+    const tbody = document.getElementById("bot-active-tbody");
+    if (!tbody) return;
+    if (!trades.length) {
+        tbody.innerHTML = `<tr><td colspan="12" class="table-empty-message">No active auto-trades.</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = trades.map(pos => {
+        const pnl = Number(pos.unrealized_pnl || 0);
+        const side = String(pos.side || pos.type || "buy").toUpperCase();
+        const isLong = side === "BUY" || side === "LONG";
+        const margin = Number(pos.margin_used || 0);
+        const pct = margin > 0 ? ((pnl / margin) * 100).toFixed(2) : "0.00";
+        return `
+            <tr>
+                <td><strong>${esc(pos.symbol || pos.asset)}</strong></td>
+                <td><span class="badge ${isLong ? "badge-green" : "badge-red"}">${isLong ? "LONG" : "SHORT"}</span></td>
+                <td>${formatINR(pos.entry_price)}</td>
+                <td><strong>${formatINR(pos.current_price)}</strong></td>
+                <td>${Number(pos.remaining_quantity || pos.quantity)} <span style="opacity:0.6;font-size:11px;">/ ${Number(pos.original_quantity || pos.quantity)}</span></td>
+                <td><span class="text-cyan font-bold">${esc(pos.leverage || 1)}x</span></td>
+                <td>${formatINR(pos.position_size || 0)}</td>
+                <td>${formatINR(margin)}</td>
+                <td class="${pnl >= 0 ? "text-green" : "text-red"}"><strong>${botSigned(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pct}%)</span></td>
+                <td>${botTime(pos.opened_at)}</td>
+                <td><span class="badge badge-blue">OPEN</span> <span class="badge badge-open">BOT</span></td>
+                <td>
+                    <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${Number(pos.id)})">
+                        <i class="fa-solid fa-sliders"></i> Manage
+                    </button>
+                </td>
+            </tr>`;
+    }).join("");
+}
+
+function botEventRow(evt) {
+    const icon = BOT_EVENT_ICONS[evt.event] || "fa-solid fa-circle-info";
+    const level = ["success", "warning", "error"].includes(evt.level) ? evt.level : "info";
+    return `
+        <div class="bot-event bot-event-${level}">
+            <i class="${icon} bot-event-icon"></i>
+            <div class="bot-event-body">
+                <div class="bot-event-head">
+                    <span class="bot-event-type">${esc(String(evt.event || "").replace(/_/g, " "))}</span>
+                    ${evt.symbol ? `<span class="bot-event-symbol">${esc(evt.symbol)}</span>` : ""}
+                    <span class="bot-event-time">${botTime(evt.ts)}</span>
+                </div>
+                <div class="bot-event-msg">${esc(evt.message)}</div>
+            </div>
+        </div>`;
+}
+
+function renderBotActivity(events) {
+    const feed = document.getElementById("bot-activity-feed");
+    if (!feed) return;
+    feed.innerHTML = events.length
+        ? events.slice(0, BOT_ACTIVITY_MAX).map(botEventRow).join("")
+        : `<div class="table-empty-message">No activity yet.</div>`;
+}
+
+function appendBotEvent(evt) {
+    const feed = document.getElementById("bot-activity-feed");
+    if (!feed) return;
+    const empty = feed.querySelector(".table-empty-message");
+    if (empty) empty.remove();
+    feed.insertAdjacentHTML("afterbegin", botEventRow(evt));
+    while (feed.children.length > BOT_ACTIVITY_MAX) feed.removeChild(feed.lastElementChild);
+}
+
+async function loadBotActivity(sessionId) {
+    const uid = botUserId();
+    if (!uid || !sessionId) return;
+    try {
+        const data = await botFetch(`/api/bot/session/${encodeURIComponent(sessionId)}/activity?user_id=${encodeURIComponent(uid)}&limit=100`);
+        renderBotActivity(data.events || []);
+    } catch (err) {
+        console.warn("[Bot] activity load failed:", err);
     }
 }
 
-if (autotradeSaveBtn) {
-    autotradeSaveBtn.addEventListener("click", async () => {
-        if (!currentUserId) return;
-        
-        const maxLoss = parseFloat(document.getElementById("autotrade-max-profit").value);
-        const config = {
-            user_id: currentUserId,
-            assets: document.getElementById("autotrade-assets").value,
-            total_capital: parseFloat(document.getElementById("autotrade-capital").value),
-            max_risk_per_trade: maxLoss, // Set Max Risk Per Trade to equal overall Max Loss
-            min_profit_target: parseFloat(document.getElementById("autotrade-min-profit").value),
-            max_profit_target: maxLoss,
-            is_active: document.getElementById("autotrade-toggle").checked
-        };
-        
-        const originalBtnText = autotradeSaveBtn.innerHTML;
-        autotradeSaveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
-        
-        try {
-            const res = await fetch("/api/bot-config", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(config)
-            });
-            const data = await res.json();
-            if (data.ok) {
-                autotradeStatusText.textContent = config.is_active ? "Running — scanning market..." : "Currently stopped";
-                setTimeout(() => { autotradeSaveBtn.innerHTML = '<i class="fa-solid fa-check"></i> Saved!'; }, 500);
-            }
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setTimeout(() => { autotradeSaveBtn.innerHTML = originalBtnText; }, 2000);
-        }
-    });
+function handleBotEvent(evt) {
+    if (!evt) return;
+    if (_botSession && evt.session_id !== _botSession.id) {
+        // A newer session (e.g. started from another tab): reload the page state.
+        if (evt.session_id > _botSession.id) refreshBotControlCenter().catch(() => {});
+        return;
+    }
+    appendBotEvent(evt);
+    if (["TRADE_CLOSED", "TARGET_REACHED", "MAX_LOSS_REACHED"].includes(evt.event)) {
+        loadBotTradeHistory();
+        loadBotSessionHistory();
+    }
+}
+
+function handleBotSessionUpdate(snap) {
+    if (!snap) return;
+    if (_botSession && snap.id < _botSession.id) return;
+    const wasLive = botIsLive(_botSession);
+    renderBotSession(snap, snap.scheduler_online);
+    if (wasLive && !botIsLive(snap)) loadBotSessionHistory();
+}
+
+function switchBotHistoryTab(tab) {
+    document.getElementById("bot-hist-btn-trades")?.classList.toggle("active", tab === "trades");
+    document.getElementById("bot-hist-btn-sessions")?.classList.toggle("active", tab === "sessions");
+    document.getElementById("bot-hist-trades")?.classList.toggle("hidden", tab !== "trades");
+    document.getElementById("bot-hist-sessions")?.classList.toggle("hidden", tab !== "sessions");
+}
+window.switchBotHistoryTab = switchBotHistoryTab;
+
+async function loadBotTradeHistory() {
+    const uid = botUserId();
+    const tbody = document.getElementById("bot-hist-trades-tbody");
+    if (!uid || !tbody) return;
+    try {
+        const data = await botFetch(`/api/trades/history?user_id=${encodeURIComponent(uid)}&source=bot&limit=25&offset=0`);
+        const trades = data.trades || [];
+        safeText(document.getElementById("bot-hist-trades-count"), String(data.total || 0));
+        tbody.innerHTML = trades.length ? trades.map(t => {
+            const pnl = Number(t.realized_pnl !== undefined && t.realized_pnl !== null ? t.realized_pnl : (t.pnl || 0));
+            const side = String(t.type || "buy").toUpperCase();
+            const isLong = side === "BUY" || side === "LONG";
+            const outcome = String(t.outcome || "closed").toUpperCase();
+            const outcomeClass = outcome === "TARGET" ? "badge-green" : outcome === "SL" ? "badge-red" : "badge-yellow";
+            return `
+                <tr>
+                    <td><strong>${esc(t.asset || t.symbol)}</strong></td>
+                    <td><code>#${esc(t.bot_session_id)}</code></td>
+                    <td><span class="badge ${isLong ? "badge-green" : "badge-red"}">${isLong ? "LONG" : "SHORT"}</span></td>
+                    <td>${formatINR(t.entry_price || 0)}</td>
+                    <td>${t.exit_price !== null && t.exit_price !== undefined ? formatINR(t.exit_price) : "—"}</td>
+                    <td>${Number(t.original_quantity || t.quantity || 0)}</td>
+                    <td><span class="text-cyan font-bold">${esc(t.leverage || 1)}x</span></td>
+                    <td class="${pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : ""}"><strong>${botSigned(pnl)}</strong></td>
+                    <td><span class="badge ${outcomeClass}">${esc(outcome)}</span></td>
+                    <td>${botDateTime(t.timestamp)}</td>
+                    <td>${botDateTime(t.closed_at)}</td>
+                </tr>`;
+        }).join("") : `<tr><td colspan="11" class="table-empty-message">No completed auto-trades yet.</td></tr>`;
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="11" class="table-empty-message text-red">Failed to load auto-trade history: ${esc(err.message)}</td></tr>`;
+    }
+}
+
+async function loadBotSessionHistory() {
+    const uid = botUserId();
+    const tbody = document.getElementById("bot-hist-sessions-tbody");
+    if (!uid || !tbody) return;
+    try {
+        const data = await botFetch(`/api/bot/session/history?user_id=${encodeURIComponent(uid)}&limit=20`);
+        const sessions = data.sessions || [];
+        safeText(document.getElementById("bot-hist-sessions-count"), String(data.total || 0));
+        tbody.innerHTML = sessions.length ? sessions.map(s => {
+            const pnl = Number(s.realized_pnl || 0);
+            return `
+                <tr>
+                    <td><code>#${esc(s.id)}</code></td>
+                    <td>${botDateTime(s.started_at || s.created_at)}</td>
+                    <td>${botDateTime(s.stopped_at)}</td>
+                    <td><span class="badge badge-blue">${esc(s.market_category)}</span></td>
+                    <td>${esc((s.assets || []).join(", "))}</td>
+                    <td>${formatINR(s.allocated_capital)}</td>
+                    <td>${formatINR(s.target_profit)}</td>
+                    <td>${formatINR(s.max_loss)}</td>
+                    <td><span class="text-cyan font-bold">${esc(Number(s.leverage))}x</span></td>
+                    <td><span class="bot-state-tag state-${esc(s.status)}">${esc(String(s.status).replace(/_/g, " "))}</span></td>
+                    <td>${esc(s.total_trades)} <span style="opacity:0.7;font-size:11px;">(${esc(s.winning_trades)}W / ${esc(s.losing_trades)}L)</span></td>
+                    <td class="${pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : ""}"><strong>${botSigned(pnl)}</strong></td>
+                </tr>`;
+        }).join("") : `<tr><td colspan="12" class="table-empty-message">No bot sessions yet.</td></tr>`;
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="12" class="table-empty-message text-red">Failed to load session history: ${esc(err.message)}</td></tr>`;
+    }
 }
 
 // Smooth scroll to login section
@@ -327,7 +838,18 @@ let isClerkActive = false;
 let clerkInitPromise = null;
 
 // Sync Clerk user with PostgreSQL / SQLite database and launch terminal
-async function syncClerkUserAndEnter(u) {
+let _clerkSyncInFlight = null;
+
+// The session listener and the redirect handler can both fire for one sign-in;
+// run the database sync and dashboard entry once.
+function syncClerkUserAndEnter(u) {
+    if (!_clerkSyncInFlight) {
+        _clerkSyncInFlight = _syncClerkUserAndEnter(u).finally(() => { _clerkSyncInFlight = null; });
+    }
+    return _clerkSyncInFlight;
+}
+
+async function _syncClerkUserAndEnter(u) {
     if (!u) return false;
 
     const userEmail = (u.primaryEmailAddress && u.primaryEmailAddress.emailAddress) ||
@@ -369,17 +891,98 @@ async function syncClerkUserAndEnter(u) {
     }
 
     sessionStorage.removeItem("orbit_oauth_in_progress");
-    enterDashboard(displayName, 18);
+    // Never enter without a real account id: this used to fall back to user #18,
+    // i.e. somebody else's portfolio.
+    showAuthError("Signed in with Google, but your trading account could not be loaded. Please try again.");
     return false;
 }
 window.syncClerkUserAndEnter = syncClerkUserAndEnter;
+
+// URL of this single-page app with an optional hash (#dashboard, #sso-callback).
+function clerkAppUrl(hash) {
+    return window.location.origin + window.location.pathname + (hash || "");
+}
+
+function showAuthError(message) {
+    const el = document.getElementById("login-error") || document.getElementById("signup-error");
+    if (el) {
+        el.textContent = message;
+        el.classList.remove("hidden");
+    }
+    if (loginSection) loginSection.scrollIntoView({ behavior: "smooth" });
+}
+
+// True when Clerk's client holds a sign-in/sign-up attempt this page can finish.
+function clerkHasOAuthAttempt(client) {
+    const signIn = client && client.signIn;
+    const signUp = client && client.signUp;
+    const ffv = signIn && signIn.firstFactorVerification;
+    const ext = signUp && signUp.verifications && signUp.verifications.externalAccount;
+    return !!((signIn && signIn.status) || (ffv && ffv.status) || (signUp && signUp.status) || (ext && ext.status));
+}
+
+// Clerk's own view of an unfinished Google attempt, for the error message and console.
+function clerkOAuthDiagnosis(client) {
+    const parts = [];
+    const describe = (label, status, err) => {
+        if (!status && !err) return;
+        let text = label + ": " + (status || "none");
+        if (err) text += " — " + (err.longMessage || err.message || "") + (err.code ? " [" + err.code + "]" : "");
+        parts.push(text);
+    };
+    const signIn = client && client.signIn;
+    const signUp = client && client.signUp;
+    if (signIn) {
+        const ffv = signIn.firstFactorVerification || {};
+        describe("sign-in", signIn.status, null);
+        describe("Google verification", ffv.status, ffv.error);
+    }
+    if (signUp) {
+        const ext = (signUp.verifications && signUp.verifications.externalAccount) || {};
+        describe("sign-up", signUp.status, null);
+        describe("Google account", ext.status, ext.error);
+    }
+    return parts.join("; ");
+}
+
+// Same-origin navigations requested by Clerk stay inside this page (no reload,
+// no detour through the hosted Account Portal); other origins are followed.
+function clerkRouterNavigate(to) {
+    const url = new URL(to, window.location.href);
+    if (url.origin !== window.location.origin) {
+        window.location.href = url.href;
+        return;
+    }
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
+}
 
 async function initClerkAuth() {
     if (clerkInitPromise) return clerkInitPromise;
     clerkInitPromise = (async () => {
         try {
-            const pubKey = "pk_test_bm90ZWQtc2tpbmstNTkzOC5jbGVyay5hY2NvdW50cy5kZXYk";
-            
+            let pubKey = "";
+            try {
+                const cfgRes = await fetch("/api/auth/config");
+                if (cfgRes.ok) {
+                    const cfgData = await cfgRes.json();
+                    if (cfgData.clerk_publishable_key) {
+                        pubKey = cfgData.clerk_publishable_key;
+                    }
+                }
+            } catch (cfgErr) {
+                console.warn("[Orbit Auth] Auth config fetch failed:", cfgErr);
+            }
+
+            if (!pubKey) {
+                console.log("[Orbit Auth] Clerk publishable key not configured in environment.");
+                return null;
+            }
+
+            const clerkScript = document.querySelector('script[src*="clerk"]');
+            if (clerkScript && !clerkScript.getAttribute("data-clerk-publishable-key")) {
+                clerkScript.setAttribute("data-clerk-publishable-key", pubKey);
+            }
+
             // Wait for Clerk SDK to be defined in global scope
             let attempts = 0;
             while (!window.Clerk && attempts < 40) {
@@ -388,30 +991,40 @@ async function initClerkAuth() {
             }
 
             if (window.Clerk) {
+                const loadOptions = {
+                    publishableKey: pubKey,
+                    routerPush: clerkRouterNavigate,
+                    routerReplace: clerkRouterNavigate,
+                };
                 if (typeof window.Clerk === "function") {
                     clerkInstance = new window.Clerk(pubKey);
-                    await clerkInstance.load();
+                    await clerkInstance.load(loadOptions);
                 } else {
                     clerkInstance = window.Clerk;
                     if (typeof clerkInstance.load === "function") {
-                        await clerkInstance.load({ publishableKey: pubKey });
+                        await clerkInstance.load(loadOptions);
                     }
                 }
                 isClerkActive = true;
                 console.log("[Orbit Auth] Clerk Headless SDK loaded with custom UI.");
 
-                // Process OAuth return callback if present
-                if (window.location.search.includes("__clerk") || window.location.hash.includes("__clerk")) {
-                    try {
-                        if (typeof clerkInstance.handleRedirectCallback === "function") {
-                            await clerkInstance.handleRedirectCallback();
-                        }
-                    } catch (cbErr) {
-                        console.warn("[Orbit Auth] Clerk redirect callback:", cbErr);
+                // Only finish a redirect when this tab started "Continue with Google"
+                // in the last 15 minutes AND Clerk has that attempt on record. The dev
+                // instance adds __clerk_db_jwt to every URL (so "__clerk" in the address
+                // proves nothing), and older builds left a "1" marker behind after a
+                // failed attempt, which made a plain reload look like an OAuth return.
+                const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
+                const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1000;
+                const returningFromOAuth = (oauthFresh || window.location.hash.includes("sso-callback"))
+                    && clerkHasOAuthAttempt(clerkInstance.client);
+                if (!returningFromOAuth) {
+                    sessionStorage.removeItem("orbit_oauth_in_progress");
+                    if (window.location.hash.includes("sso-")) {
+                        history.replaceState(null, "", window.location.pathname + window.location.search);
                     }
                 }
 
-                // Listen for active sessions (e.g. background OAuth completion)
+                // Enter as soon as a session becomes active.
                 if (typeof clerkInstance.addListener === "function") {
                     clerkInstance.addListener(async (state) => {
                         if (state && state.user && state.session) {
@@ -422,13 +1035,65 @@ async function initClerkAuth() {
                     });
                 }
 
-                // If user is already authenticated or returning from Google OAuth
-                const isReturningFromOAuth = sessionStorage.getItem("orbit_oauth_in_progress") === "1"
-                    || window.location.hash.includes("dashboard")
-                    || window.location.search.includes("__clerk");
+                if (returningFromOAuth && !clerkInstance.session && typeof clerkInstance.handleRedirectCallback === "function") {
+                    // Finish the Google round-trip on this page. Called without URLs,
+                    // Clerk sends the user to the instance's hosted default-redirect,
+                    // which lands on the marketing page instead of the dashboard.
+                    const dashboardUrl = clerkAppUrl("#dashboard");
+                    const hereUrl = clerkAppUrl("#login");
+                    let unsupportedStep = null;
+                    try {
+                        await clerkInstance.handleRedirectCallback({
+                            signInForceRedirectUrl: dashboardUrl,
+                            signUpForceRedirectUrl: dashboardUrl,
+                            signInFallbackRedirectUrl: dashboardUrl,
+                            signUpFallbackRedirectUrl: dashboardUrl,
+                            // Steps this custom UI has no screen for stay on this page.
+                            signInUrl: hereUrl,
+                            signUpUrl: hereUrl,
+                            continueSignUpUrl: clerkAppUrl("#sso-continue"),
+                            firstFactorUrl: clerkAppUrl("#sso-factor-one"),
+                            secondFactorUrl: clerkAppUrl("#sso-factor-two"),
+                            resetPasswordUrl: clerkAppUrl("#sso-reset-password"),
+                        }, (to) => {
+                            const url = new URL(to, window.location.href);
+                            if (url.origin === window.location.origin && url.hash !== "#dashboard") {
+                                unsupportedStep = url.hash.replace("#", "");
+                            }
+                            clerkRouterNavigate(to);
+                        });
+                    } catch (cbErr) {
+                        console.warn("[Orbit Auth] Clerk redirect callback:", cbErr);
+                        const detail = (cbErr && cbErr.errors && cbErr.errors[0] && (cbErr.errors[0].longMessage || cbErr.errors[0].message))
+                            || (cbErr && cbErr.message) || String(cbErr);
+                        showAuthError("Google sign-in could not be completed: " + detail);
+                    }
 
+                    if (!clerkInstance.session) {
+                        sessionStorage.removeItem("orbit_oauth_in_progress");
+                        const signUp = clerkInstance.client && clerkInstance.client.signUp;
+                        const diagnosis = clerkOAuthDiagnosis(clerkInstance.client);
+                        console.warn("[Orbit Auth] Google sign-in did not finish:", diagnosis || "no details", "| Clerk next step:", unsupportedStep);
+                        if (signUp && signUp.status === "missing_requirements") {
+                            showAuthError("Google sign-up needs more details (" + (signUp.missingFields || []).join(", ")
+                                + "). Adjust the required fields in the Clerk dashboard or sign up with email.");
+                        } else {
+                            const errEl = document.getElementById("login-error");
+                            if (!errEl || errEl.classList.contains("hidden")) {
+                                showAuthError("Google sign-in did not finish (" + (diagnosis || "Clerk returned no details")
+                                    + "). Please try again.");
+                            }
+                        }
+                        // A reload must not replay the callback.
+                        if (window.location.hash.includes("sso-")) {
+                            history.replaceState(null, "", window.location.pathname + window.location.search);
+                        }
+                    }
+                }
+
+                // Signed in (just now, or already on #dashboard): sync the account and enter.
                 if (clerkInstance.user && clerkInstance.session) {
-                    if (isReturningFromOAuth) {
+                    if (returningFromOAuth || window.location.hash.includes("dashboard")) {
                         await syncClerkUserAndEnter(clerkInstance.user);
                     }
                 }
@@ -590,10 +1255,11 @@ async function handleClerkGoogleAuth() {
         }
 
         // Mark OAuth in progress so the return page knows to complete transition
-        sessionStorage.setItem("orbit_oauth_in_progress", "1");
+        sessionStorage.setItem("orbit_oauth_in_progress", String(Date.now()));
 
-        const redirectUrl = window.location.origin + window.location.pathname;
-        const redirectUrlComplete = window.location.origin + window.location.pathname + "#dashboard";
+        // Google returns to #sso-callback, where initClerkAuth finishes the sign-in.
+        const redirectUrl = clerkAppUrl("#sso-callback");
+        const redirectUrlComplete = clerkAppUrl("#dashboard");
 
         const oauthParams = {
             strategy: "oauth_google",
@@ -1916,6 +2582,15 @@ function connectWebSocket() {
                 updateHistoryTable(data.trades);
                 updateOverviewHistoryStats(data.trades);
                 loadTradeHistoryPage(currentHistoryPage || 0);
+                break;
+
+            case "bot_event":
+                // Auto-Trade Bot activity (delivered by the Go gateway's user hub).
+                handleBotEvent(data);
+                break;
+
+            case "bot_session_updated":
+                handleBotSessionUpdate(data.data);
                 break;
 
             case "auth_error":
@@ -5875,7 +6550,7 @@ async function loadOpenTrades() {
                     <td><strong>${esc(pos.symbol || pos.asset)}</strong></td>
                     <td><span class="badge badge-blue">${esc(market)}</span></td>
                     <td><span class="badge ${sideClass}">${esc(sideLabel)}</span></td>
-                    <td><span class="badge badge-blue">OPEN</span></td>
+                    <td><span class="badge badge-blue">OPEN</span>${pos.source === "bot" ? ' <span class="badge badge-open" title="Opened by Auto-Trade Bot session #' + esc(pos.bot_session_id) + '">BOT</span>' : ""}</td>
                     <td>${formatINR(pos.entry_price)}</td>
                     <td><strong>${formatINR(pos.current_price)}</strong></td>
                     <td>${Number(pos.remaining_quantity || pos.quantity)} <span style="opacity:0.6;font-size:11px;">/ ${Number(pos.original_quantity || pos.quantity)}</span></td>
@@ -6078,7 +6753,7 @@ window.debouncedHistorySearch = debouncedHistorySearch;
 
 // Manage Trade Modal Operations
 function openManageTradeModal(tradeId) {
-    const trade = _openTradesCache.find(p => p.id === tradeId);
+    const trade = _openTradesCache.find(p => p.id === tradeId) || _botActiveTradesCache.find(p => p.id === tradeId);
     if (!trade) {
         console.warn("[ManageTrades] Trade not found in cache:", tradeId);
         return;
@@ -6249,8 +6924,13 @@ async function executePositionClose() {
     if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
 
     try {
-        const endpoint = isFullClose ? `/api/trades/${tradeId}/close/full` : `/api/trades/${tradeId}/close`;
-        const payload = isFullClose ? {} : { quantity: closeQty };
+        // The close endpoints check ownership against user_id; omitting it made
+        // the backend fall back to user 1 and reject every other account.
+        const uid = currentUserId || localStorage.getItem("orbit_user_id") || 1;
+        const endpoint = isFullClose
+            ? `/api/trades/${tradeId}/close/full?user_id=${encodeURIComponent(uid)}`
+            : `/api/trades/${tradeId}/close`;
+        const payload = isFullClose ? {} : { quantity: closeQty, user_id: Number(uid) };
 
         const res = await fetch(endpoint, {
             method: "POST",
@@ -6270,7 +6950,8 @@ async function executePositionClose() {
         await Promise.all([
             loadOpenTrades(),
             fetchDashboardSummary(),
-            loadTradeHistoryPage(0)
+            loadTradeHistoryPage(0),
+            trade.source === "bot" ? refreshBotControlCenter().catch(() => {}) : Promise.resolve()
         ]);
 
         logToTerminal("Execution Agent", `✅ Position #${tradeId} (${trade.symbol || trade.asset}) ${isFullClose ? "fully" : "partially"} closed. Realized P&L: ${formatINR(data.realized_pnl || 0)}`);

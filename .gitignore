@@ -1,5 +1,9 @@
 # Secrets — .env holds live API keys and the database URL
 .env
+.env.*
+*.env
+*.env.*
+*.local
 
 # Python
 __pycache__/

@@ -21,6 +21,7 @@ from backend.database import (
     get_closed_trade_history_paginated,
     get_total_realized_pnl,
     get_all_trades,
+    open_active_trade_atomic,
     partially_close_position,
     fully_close_position,
 )
@@ -134,7 +135,9 @@ class PositionService:
                 "opened_at": opened_at,
                 "updated_at": datetime.now().isoformat(),
                 "duration": duration_str,
-                "is_live": is_live
+                "is_live": is_live,
+                "source": p.get("source") or "manual",
+                "bot_session_id": p.get("bot_session_id"),
             }
             live_positions.append(pos_item)
 
@@ -291,6 +294,75 @@ class PositionService:
         result["ok"] = True
         return result
 
+    async def open_market_position(
+        self,
+        user_id: int,
+        symbol: str,
+        side: str,
+        quantity: float,
+        leverage: float = 1.0,
+        sl: float = 0.0,
+        target: float = 0.0,
+        market: Optional[str] = None,
+        price: Optional[float] = None,
+        source: str = "manual",
+        bot_session_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Single execution path for market orders (manual REST and the Auto-Trade Bot).
+
+        Reserves margin atomically in the database (with the bot guard when
+        bot_session_id is set), then mirrors the position into the Valkey
+        live-state indices used by the tick scheduler. Without an explicit
+        price the latest quote is used; a missing quote refuses the order.
+        Raises ValueError when the order is refused.
+        """
+        if price is None:
+            price = await self.market_service.get_price(symbol)
+        price = float(price or 0.0)
+        if price <= 0:
+            raise ValueError(f"No valid market price available for {symbol}.")
+        lev = max(1.0, float(leverage or 1.0))
+        mkt = market or ("Crypto" if "-" in symbol else "Stock")
+
+        trade_id, res = await asyncio.to_thread(
+            open_active_trade_atomic, user_id, symbol, side, quantity, price, lev,
+            sl or 0.0, target or 0.0, mkt, source, bot_session_id,
+        )
+        if not trade_id:
+            raise ValueError(str(res))
+
+        now_iso = datetime.now().isoformat()
+        trade_dict = {
+            "id": trade_id,
+            "trade_id": trade_id,
+            "user_id": user_id,
+            "symbol": symbol,
+            "side": side,
+            "market": mkt,
+            "entry_price": price,
+            "current_price": price,
+            "quantity": quantity,
+            "remaining_quantity": quantity,
+            "leverage": lev,
+            "margin_used": (quantity * price) / lev,
+            "position_size": quantity * price,
+            "sl": sl or 0.0,
+            "target": target or 0.0,
+            "unrealized_pnl": 0.0,
+            "unrealized_pnl_percent": 0.0,
+            "status": "active",
+            "source": "bot" if bot_session_id is not None else source,
+            "bot_session_id": bot_session_id,
+            "opened_at": now_iso,
+            "updated_at": now_iso,
+        }
+        valkey_service.set(f"trade:active:{trade_id}", trade_dict, ttl_seconds=300)
+        valkey_service.sadd(f"user:{user_id}:active_trades", str(trade_id))
+        valkey_service.sadd(f"symbol:{symbol}:active_trades", str(trade_id))
+        valkey_service.invalidate_user_cache(user_id)
+        return {"trade": trade_dict, "balance": res}
+
     async def get_pending_orders_list(self, user_id: int = 1) -> List[Dict[str, Any]]:
         """Fetch pending orders for user and index active pending orders in Valkey."""
         orders = get_pending_orders(user_id)
@@ -309,9 +381,11 @@ class PositionService:
         side: Optional[str] = None,
         outcome: Optional[str] = None,
         limit: int = 20,
-        offset: int = 0
+        offset: int = 0,
+        source: Optional[str] = None,
+        bot_session_id: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Fetch paginated closed trades."""
+        """Fetch paginated closed trades (optionally only bot or manual trades, or one bot session's)."""
         return get_closed_trade_history_paginated(
             user_id=user_id,
             symbol=symbol,
@@ -319,7 +393,9 @@ class PositionService:
             side=side,
             outcome=outcome,
             limit=limit,
-            offset=offset
+            offset=offset,
+            source=source,
+            bot_session_id=bot_session_id
         )
 
 

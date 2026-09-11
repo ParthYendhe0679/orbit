@@ -27,7 +27,11 @@ from backend.models.brain import (
     CompletenessTier,
 )
 from backend.models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
+from backend.models.decision import DecisionEvaluationResult
+from backend.models.opportunity import OpportunityEvaluationResult
 from backend.models.risk import (
+    BotGateCheck,
+    BotTradeGateResult,
     DimensionAssessment,
     FactorSeverity,
     RiskDiagnostics,
@@ -503,6 +507,116 @@ class RiskGuard:
             summary=summary,
             metrics={"data_points": n_bars, "timestamp": ctx.market_summary.timestamp},
             status="EVALUATED",
+        )
+
+    # =======================================================================
+    # AUTO-TRADE BOT ENTRY GATE
+    # =======================================================================
+
+    # Ordinal ranks for the categorical outputs of the Decision and Opportunity
+    # engines, so a configured minimum level can be compared.
+    _CLARITY_RANK = {"INSUFFICIENT": 0, "UNCLEAR": 1, "MODERATE": 2, "CLEAR": 3}
+    _OPPORTUNITY_RANK = {"VERY_LOW": 0, "LOW": 1, "MODERATE": 2, "HIGH": 3, "VERY_HIGH": 4}
+
+    def evaluate_bot_trade_gate(
+        self,
+        *,
+        symbol: str,
+        session_status: str,
+        entry_statuses,
+        target_profit: float,
+        max_loss: float,
+        realized_pnl: float,
+        loss_basis_pnl: float,
+        allocated_capital: float,
+        used_capital: float,
+        has_open_position: bool,
+        risk_result: Optional[RiskEvaluationResult],
+        decision: Optional[DecisionEvaluationResult],
+        opportunity: Optional[OpportunityEvaluationResult],
+        blocked_risk_levels,
+        min_decision_clarity: str,
+        min_opportunity_level: str,
+    ) -> BotTradeGateResult:
+        """
+        Decide whether a bot session may open a trade on `symbol`.
+
+        Pure and deterministic: session limits come from the caller, market
+        risk from evaluate_risk(). The thresholds (blocked risk levels, minimum
+        clarity / opportunity level) are policy inputs, not constants here —
+        their final values are still a product decision.
+        """
+        checks: List[BotGateCheck] = []
+        rejections: List[RiskFactor] = []
+        limit_breached: Optional[str] = None
+
+        def check(check_id: str, passed: bool, detail: str, severity: FactorSeverity = FactorSeverity.WARNING, category: str = "BOT_SESSION"):
+            checks.append(BotGateCheck(check_id=check_id, passed=passed, detail=detail))
+            if not passed:
+                rejections.append(RiskFactor(
+                    factor_id=check_id, category=category, severity=severity,
+                    title=check_id.replace("_", " ").title(), detail=detail,
+                ))
+
+        entry_statuses = {str(getattr(s, "value", s)) for s in entry_statuses}
+        check("SESSION_ACCEPTS_ENTRIES", session_status in entry_statuses,
+              f"Session status is {session_status}.", FactorSeverity.CRITICAL)
+
+        target_ok = realized_pnl < target_profit
+        check("TARGET_PROFIT_NOT_REACHED", target_ok,
+              f"Realized session P&L {realized_pnl:.2f} vs target {target_profit:.2f}.", FactorSeverity.INFO)
+        if not target_ok:
+            limit_breached = "TARGET_REACHED"
+
+        loss_ok = loss_basis_pnl > -max_loss
+        check("MAX_LOSS_NOT_REACHED", loss_ok,
+              f"Session P&L for the loss limit {loss_basis_pnl:.2f} vs limit -{max_loss:.2f}.", FactorSeverity.CRITICAL)
+        if not loss_ok and limit_breached is None:
+            limit_breached = "MAX_LOSS_REACHED"
+
+        remaining = allocated_capital - used_capital
+        check("BOT_CAPITAL_AVAILABLE", remaining > 0,
+              f"Remaining bot capital {max(0.0, remaining):.2f} of {allocated_capital:.2f} allocated.")
+        check("NO_OPEN_POSITION_ON_SYMBOL", not has_open_position,
+              f"{'An' if has_open_position else 'No'} open bot position on {symbol}.", FactorSeverity.INFO)
+
+        if risk_result is None:
+            check("ANALYSIS_RISK_AVAILABLE", False, "Risk Guard evaluation unavailable.", FactorSeverity.CRITICAL, "ANALYSIS_RISK")
+        else:
+            usable = risk_result.status not in (RiskStatus.FAILED, RiskStatus.INSUFFICIENT_DATA)
+            check("ANALYSIS_RISK_AVAILABLE", usable,
+                  f"Risk Guard status {risk_result.status.value}.", FactorSeverity.CRITICAL, "ANALYSIS_RISK")
+            blocked = {str(getattr(lvl, "value", lvl)) for lvl in blocked_risk_levels}
+            check("ANALYSIS_RISK_LEVEL_ALLOWED", risk_result.risk_level.value not in blocked,
+                  f"Market risk {risk_result.risk_level.value} ({risk_result.risk_score:.1f}/100); blocked levels: {sorted(blocked) or 'none'}.",
+                  FactorSeverity.CRITICAL, "ANALYSIS_RISK")
+
+        if decision is None:
+            check("DECISION_DIRECTIONAL", False, "Decision Engine result unavailable.", FactorSeverity.WARNING, "DECISION")
+        else:
+            check("DECISION_DIRECTIONAL", decision.decision.value in ("BULLISH", "BEARISH"),
+                  f"Market stance {decision.decision.value}.", FactorSeverity.WARNING, "DECISION")
+            clarity = decision.decision_clarity.value
+            check("DECISION_CLARITY_SUFFICIENT",
+                  self._CLARITY_RANK.get(clarity, 0) >= self._CLARITY_RANK.get(min_decision_clarity, 99),
+                  f"Decision clarity {clarity} (confidence {decision.decision_confidence:.1f}); minimum {min_decision_clarity}.",
+                  FactorSeverity.WARNING, "DECISION")
+
+        if opportunity is None:
+            check("OPPORTUNITY_LEVEL_SUFFICIENT", False, "Opportunity Engine result unavailable.", FactorSeverity.WARNING, "OPPORTUNITY")
+        else:
+            level = opportunity.opportunity_level.value
+            check("OPPORTUNITY_LEVEL_SUFFICIENT",
+                  self._OPPORTUNITY_RANK.get(level, 0) >= self._OPPORTUNITY_RANK.get(min_opportunity_level, 99),
+                  f"Opportunity {level} ({opportunity.opportunity_score:.1f}/100); minimum {min_opportunity_level}.",
+                  FactorSeverity.WARNING, "OPPORTUNITY")
+
+        return BotTradeGateResult(
+            symbol=symbol,
+            approved=all(c.passed for c in checks),
+            checks=checks,
+            rejections=rejections,
+            limit_breached=limit_breached,
         )
 
     # =======================================================================

@@ -5607,6 +5607,202 @@ body.in-dashboard #three-canvas {
 }
 
 /* ==========================================================================
+   12b. AUTO-TRADE BOT CONTROL CENTER
+   ========================================================================== */
+
+#tab-content-autotrade {
+    display: block;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-bottom: var(--s6);
+}
+#tab-content-autotrade.hidden-tab { display: none !important; }
+
+.bot-center {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s4);
+    width: 100%;
+    min-height: 0;
+}
+.bot-header { flex-wrap: wrap; gap: var(--s3); }
+.bot-header-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+
+.bot-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 32px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-1);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+}
+.bot-status-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.bot-status-pill.state-STARTING,
+.bot-status-pill.state-SCANNING,
+.bot-status-pill.state-ANALYZING,
+.bot-status-pill.state-WAITING { color: var(--accent); border-color: var(--accent-line); background: var(--accent-tint); }
+.bot-status-pill.state-OPPORTUNITY_FOUND,
+.bot-status-pill.state-TRADE_ACTIVE { color: var(--cyan); border-color: rgba(45, 212, 191, 0.35); background: var(--cyan-tint); }
+.bot-status-pill.state-STOPPING { color: var(--warn); border-color: var(--warn-line); background: var(--warn-tint); }
+.bot-status-pill.state-TARGET_REACHED { color: var(--pos); border-color: var(--pos-line); background: var(--pos-tint); }
+.bot-status-pill.state-MAX_LOSS_REACHED,
+.bot-status-pill.state-ERROR { color: var(--neg); border-color: var(--neg-line); background: var(--neg-tint); }
+.bot-status-pill.state-STARTING .bot-status-dot,
+.bot-status-pill.state-SCANNING .bot-status-dot,
+.bot-status-pill.state-ANALYZING .bot-status-dot,
+.bot-status-pill.state-OPPORTUNITY_FOUND .bot-status-dot { animation: botPulse 1.2s ease-in-out infinite; }
+@keyframes botPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.bot-scheduler-pill {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    padding: 6px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line);
+    color: var(--text-3);
+}
+.bot-scheduler-pill.online { color: var(--accent); border-color: var(--accent-line); }
+.bot-scheduler-pill.offline { color: var(--warn); border-color: var(--warn-line); }
+
+.bot-session-meta {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text-3);
+    padding: var(--s2) var(--s3);
+    background: var(--surface-0);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+}
+
+.bot-kpi-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--s3); }
+.bot-kpi {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    padding: var(--s3) var(--s4);
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+}
+.bot-kpi-label { font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em; color: var(--text-3); }
+.bot-kpi-val {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bot-kpi-sub { font-size: 11px; color: var(--text-3); min-height: 14px; }
+.bot-progress { height: 4px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+.bot-progress-fill { height: 100%; width: 0; transition: width 0.4s ease; }
+.bot-progress-fill.pos { background: var(--pos); }
+.bot-progress-fill.neg { background: var(--neg); }
+
+.bot-main-grid { display: grid; grid-template-columns: minmax(320px, 440px) minmax(0, 1fr); gap: var(--s4); }
+.bot-panel { display: flex; flex-direction: column; min-height: 0; }
+.bot-config-form { padding: var(--s4); display: flex; flex-direction: column; }
+.bot-label-hint { font-weight: 400; color: var(--text-4); margin-left: 6px; text-transform: none; letter-spacing: 0; }
+.bot-asset-chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.bot-asset-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 6px 10px;
+    background: var(--surface-3);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    color: var(--text-2);
+    cursor: pointer;
+    font-size: 11px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.bot-asset-chip strong { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); }
+.bot-asset-chip span { color: var(--text-4); font-size: 10px; }
+.bot-asset-chip:hover:not(:disabled) { border-color: var(--line-strong); }
+.bot-asset-chip.selected { border-color: var(--accent-line); background: var(--accent-tint); }
+.bot-asset-chip.selected strong { color: var(--accent); }
+.bot-asset-chip:disabled { cursor: not-allowed; opacity: 0.6; }
+.bot-chip-empty { font-size: 11.5px; color: var(--text-4); }
+.bot-max-btn { position: absolute; right: 4px; height: 28px; padding: 0 10px; font-size: 10.5px; }
+.bot-config-error {
+    font-size: 12px;
+    color: var(--neg);
+    background: var(--neg-tint);
+    border: 1px solid var(--neg-line);
+    border-radius: var(--r-md);
+    padding: var(--s2) var(--s3);
+    margin-bottom: var(--s3);
+}
+.bot-config-actions { display: flex; gap: var(--s2); }
+.bot-config-actions .glow-btn { flex: 1; }
+.bot-config-note { font-size: 11px; color: var(--text-4); margin: var(--s3) 0 0; line-height: 1.5; }
+
+.bot-activity-feed {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 560px;
+    padding: var(--s3);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.bot-event {
+    display: flex;
+    gap: var(--s3);
+    padding: 8px 10px;
+    border: 1px solid var(--line-soft);
+    border-left: 2px solid var(--line-strong);
+    border-radius: var(--r-sm);
+    background: var(--surface-0);
+}
+.bot-event-icon { color: var(--text-3); font-size: 12px; margin-top: 2px; width: 14px; text-align: center; }
+.bot-event-success { border-left-color: var(--pos); }
+.bot-event-success .bot-event-icon { color: var(--pos); }
+.bot-event-warning { border-left-color: var(--warn); }
+.bot-event-warning .bot-event-icon { color: var(--warn); }
+.bot-event-error { border-left-color: var(--neg); }
+.bot-event-error .bot-event-icon { color: var(--neg); }
+.bot-event-body { min-width: 0; flex: 1; }
+.bot-event-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.bot-event-type { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: var(--text-2); }
+.bot-event-symbol { font-family: var(--font-mono); font-size: 10px; color: var(--accent); }
+.bot-event-time { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--text-4); }
+.bot-event-msg { font-size: 12px; color: var(--text-2); line-height: 1.45; word-break: break-word; }
+
+.bot-history-tabs { border-bottom: none; padding-bottom: 0; }
+.bot-state-tag { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; color: var(--text-3); }
+.bot-state-tag.state-TARGET_REACHED { color: var(--pos); }
+.bot-state-tag.state-MAX_LOSS_REACHED,
+.bot-state-tag.state-ERROR { color: var(--neg); }
+.bot-state-tag.state-STOPPING { color: var(--warn); }
+.bot-state-tag.state-STARTING,
+.bot-state-tag.state-SCANNING,
+.bot-state-tag.state-ANALYZING,
+.bot-state-tag.state-OPPORTUNITY_FOUND,
+.bot-state-tag.state-TRADE_ACTIVE,
+.bot-state-tag.state-WAITING { color: var(--accent); }
+
+@media (max-width: 1280px) {
+    .bot-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 960px) {
+    .bot-main-grid { grid-template-columns: 1fr; }
+    .bot-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* ==========================================================================
    13. REPORTS TAB
    --------------------------------------------------------------------------
    The report is a long document, not a viewport pane: it owns its own scroll.

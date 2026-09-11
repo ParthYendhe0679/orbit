@@ -8,19 +8,23 @@ BREAK_EVEN_TRIGGER_PCT = 0.015
 OUTCOME_LABELS = {"sl": "stop loss", "target": "target", "cancelled": "cancelled"}
 
 
-def monitor_positions(current_price, log_func=None, user_id=None, asset=None):
+def monitor_positions(current_price, log_func=None, user_id=None, asset=None, bot_session_id=None):
     active_positions = db.get_active_positions(user_id)
     closed_any = False
-    
+
     for trade in active_positions:
         if trade["status"] != "active":
             continue
         if asset and trade.get("asset") != asset:
             continue
-            
+        # The Auto-Trade Bot only supervises the positions its own session opened.
+        if bot_session_id is not None and trade.get("bot_session_id") != bot_session_id:
+            continue
+
         trade_id = trade["id"]
         trade_asset = trade["asset"]
-        trade_type = trade["type"]
+        # REST orders store "BUY"/"SELL"; agent orders store "buy"/"sell".
+        trade_type = str(trade["type"]).lower()
         entry = trade["entry_price"]
         sl = trade["sl"]
         target = trade["target"]
@@ -51,25 +55,29 @@ def monitor_positions(current_price, log_func=None, user_id=None, asset=None):
                 sl = entry # Update local variable for checking exit
                 
         # 3. Check for SL / Take Profit triggers
+        # A level of 0 means "not set" (REST orders default sl/target to 0).
+        # Treating it as a price closed every such long position at 0.
         should_close = False
         exit_price = current_price
         outcome = "target"
+        has_sl = bool(sl) and sl > 0
+        has_target = bool(target) and target > 0
 
         if trade_type == "buy":
-            if current_price <= sl:
+            if has_sl and current_price <= sl:
                 should_close = True
                 exit_price = sl  # Assume execution at SL (no slippage)
                 outcome = "sl"
-            elif current_price >= target:
+            elif has_target and current_price >= target:
                 should_close = True
                 exit_price = target  # Assume execution at Target
                 outcome = "target"
         else: # sell
-            if current_price >= sl:
+            if has_sl and current_price >= sl:
                 should_close = True
                 exit_price = sl
                 outcome = "sl"
-            elif current_price <= target:
+            elif has_target and current_price <= target:
                 should_close = True
                 exit_price = target
                 outcome = "target"
@@ -81,11 +89,12 @@ def monitor_positions(current_price, log_func=None, user_id=None, asset=None):
             db.close_trade(trade_id, exit_price, outcome)
             closed_any = True
             
-            # Calculate final realized P&L
+            # Calculate final realized P&L (same leverage-multiplied formula close_trade books)
+            lev = trade.get("leverage") or 1.0
             if trade_type == "buy":
-                final_pnl = (exit_price - entry) * qty
+                final_pnl = (exit_price - entry) * qty * lev
             else:
-                final_pnl = (entry - exit_price) * qty
+                final_pnl = (entry - exit_price) * qty * lev
                 
             if log_func:
                 pnl_sign = "+" if final_pnl >= 0 else ""

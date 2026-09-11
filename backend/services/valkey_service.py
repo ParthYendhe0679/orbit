@@ -43,6 +43,7 @@ class ValkeyManager:
         self._force_offline = False
         self._memory_cache: Dict[str, tuple[float, Any]] = {}
         self._memory_sets: Dict[str, Set[Any]] = {}
+        self._memory_lists: Dict[str, List[Any]] = {}
         self._init_connection()
 
     def _init_connection(self):
@@ -284,6 +285,85 @@ class ValkeyManager:
             "cache_mode": "aiven_valkey" if connected else "memory_fallback",
             "tls": VALKEY_SSL,
         }
+
+    # -----------------------------------------------------------------------
+    # Leases (single-leader coordination) & capped lists (activity feeds)
+    # -----------------------------------------------------------------------
+
+    _LEASE_RENEW_SCRIPT = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('expire', KEYS[1], ARGV[2]) else return 0 end"
+    )
+    _LEASE_RELEASE_SCRIPT = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) else return 0 end"
+    )
+
+    def acquire_lease(self, key: str, owner: str, ttl_seconds: int) -> bool:
+        """
+        Take or renew an expiring lease. Returns True while `owner` holds it.
+        In fallback mode the lease is process-local (there is no shared store).
+        """
+        if self.is_connected and self._valkey_client and not self._force_offline:
+            try:
+                if self._valkey_client.set(key, owner, nx=True, ex=int(ttl_seconds)):
+                    return True
+                return bool(self._valkey_client.eval(self._LEASE_RENEW_SCRIPT, 1, key, owner, int(ttl_seconds)))
+            except Exception as e:
+                logger.warning(f"[Valkey] Error acquiring lease {key}: {e}")
+                self.is_connected = False
+        now = time.time()
+        item = self._memory_cache.get(key)
+        if item and item[0] > now and item[1] != owner:
+            return False
+        self._memory_cache[key] = (now + ttl_seconds, owner)
+        return True
+
+    def release_lease(self, key: str, owner: str) -> None:
+        """Release a lease only if `owner` still holds it."""
+        item = self._memory_cache.get(key)
+        if item and item[1] == owner:
+            self._memory_cache.pop(key, None)
+        if self.is_connected and self._valkey_client and not self._force_offline:
+            try:
+                self._valkey_client.eval(self._LEASE_RELEASE_SCRIPT, 1, key, owner)
+            except Exception as e:
+                logger.warning(f"[Valkey] Error releasing lease {key}: {e}")
+                self.is_connected = False
+
+    def lpush_capped(self, key: str, value: Any, max_len: int = 200, ttl_seconds: int = 604800) -> None:
+        """Prepend to a list, keep only the newest `max_len` items, refresh its TTL."""
+        lst = self._memory_lists.setdefault(key, [])
+        lst.insert(0, value)
+        del lst[max_len:]
+        if self.is_connected and self._valkey_client and not self._force_offline:
+            try:
+                serialized = json.dumps(value) if not isinstance(value, str) else value
+                pipe = self._valkey_client.pipeline()
+                pipe.lpush(key, serialized)
+                pipe.ltrim(key, 0, max_len - 1)
+                pipe.expire(key, int(ttl_seconds))
+                pipe.execute()
+            except Exception as e:
+                logger.warning(f"[Valkey] Error in lpush_capped on {key}: {e}")
+                self.is_connected = False
+
+    def lrange(self, key: str, start: int = 0, end: int = -1) -> List[Any]:
+        """Read a list slice (newest first for lists written by lpush_capped)."""
+        if self.is_connected and self._valkey_client and not self._force_offline:
+            try:
+                out = []
+                for raw in self._valkey_client.lrange(key, start, end) or []:
+                    try:
+                        out.append(json.loads(raw))
+                    except (ValueError, TypeError):
+                        out.append(raw)
+                return out
+            except Exception as e:
+                logger.warning(f"[Valkey] Error in lrange on {key}: {e}")
+                self.is_connected = False
+        lst = self._memory_lists.get(key, [])
+        return list(lst[start:] if end == -1 else lst[start:end + 1])
 
     # -----------------------------------------------------------------------
     # High-level domain helpers

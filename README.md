@@ -37,6 +37,23 @@ python -m uvicorn backend.main:app --reload --port 8000
 ```
 Open **[http://localhost:8000](http://localhost:8000)** in your browser.
 
+### Auto-Trade Bot (needs the Go gateway)
+The bot is scheduled by the Go gateway (`backend/botsched`): one goroutine per
+session, bounded parallelism, per-symbol shared analysis and a leader lease.
+The ai-service only executes single steps, so run the three processes:
+
+```powershell
+# ai-service (AI + trading engine)
+cd ai-service; python -m uvicorn main:app --port 8002
+# gateway on :8000 (serves the UI, proxies /api + /ws, runs the bot scheduler)
+cd backend; $env:AI_SERVICE_URL="http://127.0.0.1:8002"; go run .
+# optional tick hub on :8001
+cd go-stream; go run .
+```
+Set the same `ORBIT_INTERNAL_TOKEN` on the gateway and the ai-service whenever
+they are not both on loopback (always in docker-compose). Bot tests:
+`python -m pytest tests -q` and `cd backend; go test ./...`.
+
 ### 3. Docker Deployment
 ```powershell
 docker-compose up --build

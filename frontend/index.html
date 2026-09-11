@@ -16,8 +16,7 @@
     <script
         async
         crossorigin="anonymous"
-        data-clerk-publishable-key="pk_test_bm90ZWQtc2tpbmstNTkzOC5jbGVyay5hY2NvdW50cy5kZXYk"
-        src="https://noted-skink-5938.clerk.accounts.dev/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+        src="https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
         type="text/javascript"></script>
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
@@ -264,6 +263,8 @@
                         </form>
                     </div>
 
+                    <!-- Clerk bot protection widget for sign-ups started from this custom UI -->
+                    <div id="clerk-captcha"></div>
                 </div><!-- /.auth-card -->
             </div>
         </section>
@@ -1629,64 +1630,241 @@
 
                     </div><!-- /tab-content-terminal -->
 
-                    <!-- TAB 3: AUTOTRADE BOT PANE -->
+                    <!-- TAB 3: AUTO-TRADE BOT CONTROL CENTER -->
                     <div id="tab-content-autotrade" class="tab-content hidden-tab">
-                        <div class="card autotrade-config-card">
-                            <div class="card-header">
-                                <div class="card-title">
-                                    <i class="fa-solid fa-bolt"></i>
-                                    <h2>Auto-Trade Configuration</h2>
+                        <div class="bot-center">
+                            <!-- Header: status & controls -->
+                            <div class="manage-trades-header bot-header">
+                                <div class="manage-trades-title-wrap">
+                                    <h1 class="manage-trades-title">AUTO-TRADE BOT</h1>
+                                    <span class="manage-trades-sub">Autonomous Session Control &amp; Live ORBIT AI Activity</span>
                                 </div>
-                            </div>
-                            
-                            <form id="autotrade-form">
-                                <div class="input-group">
-                                    <label for="autotrade-assets">Assets to Scan (comma separated)</label>
-                                    <div class="input-wrapper">
-                                        <i class="fa-solid fa-magnifying-glass input-icon"></i>
-                                        <input type="text" id="autotrade-assets" placeholder="e.g. BTC-USD, ETH-USD, GC=F" required>
-                                    </div>
-                                </div>
-                                <div class="input-group">
-                                    <label for="autotrade-capital">Allocated Capital (INR)</label>
-                                    <div class="input-wrapper">
-                                        <i class="fa-solid fa-wallet input-icon"></i>
-                                        <input type="number" id="autotrade-capital" value="10000" min="1000" required>
-                                    </div>
-                                </div>
-                                <div class="input-group autotrade-split-row">
-                                    <div class="autotrade-split-col">
-                                        <label for="autotrade-min-profit">Target Profit (INR)</label>
-                                        <div class="input-wrapper">
-                                            <input type="number" id="autotrade-min-profit" value="3000" min="50" required>
-                                        </div>
-                                    </div>
-                                    <div class="autotrade-split-col">
-                                        <label for="autotrade-max-profit">Max Loss (INR)</label>
-                                        <div class="input-wrapper">
-                                            <input type="number" id="autotrade-max-profit" value="500" min="100" required>
-                                        </div>
-                                    </div>
-                                </div>
-                                
-                                <div class="autotrade-status-box">
-                                    <div class="autotrade-status-info">
-                                        <h3>Bot Status</h3>
-                                        <p id="autotrade-status-text">Currently stopped</p>
-                                    </div>
-                                    <label class="switch">
-                                        <input type="checkbox" id="autotrade-toggle">
-                                        <span class="slider round"></span>
-                                        <span class="slider-knob"></span>
-                                    </label>
-                                </div>
-                                
-                                <div class="login-actions">
-                                    <button type="button" id="autotrade-save-btn" class="glow-btn btn-primary" style="width: 100%;">
-                                        <i class="fa-solid fa-floppy-disk"></i> Save Configuration
+                                <div class="bot-header-actions">
+                                    <span id="bot-scheduler-pill" class="bot-scheduler-pill" title="Heartbeat of the Go bot scheduler in the gateway">GO SCHEDULER —</span>
+                                    <span id="bot-status-pill" class="bot-status-pill state-STOPPED"><span class="bot-status-dot"></span><span id="bot-status-text">STOPPED</span></span>
+                                    <button id="bot-start-btn" class="glow-btn btn-primary" onclick="startBotSession()">
+                                        <i class="fa-solid fa-play"></i> <span>Start Bot</span>
+                                    </button>
+                                    <button id="bot-stop-btn" class="glow-btn btn-danger" onclick="stopBotSession()" disabled>
+                                        <i class="fa-solid fa-stop"></i> <span>Stop Bot</span>
                                     </button>
                                 </div>
-                            </form>
+                            </div>
+                            <div id="bot-session-meta" class="bot-session-meta">No session yet. Configure the bot below and start it.</div>
+
+                            <!-- Session KPIs (all values from the backend session snapshot) -->
+                            <div class="bot-kpi-grid">
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">ALLOCATED CAPITAL</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-allocated">—</span>
+                                    <span class="bot-kpi-sub" id="bot-kpi-allocated-sub"></span>
+                                </div>
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">AVAILABLE BOT CAPITAL</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-available">—</span>
+                                    <span class="bot-kpi-sub" id="bot-kpi-used"></span>
+                                </div>
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">BOT P&amp;L</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-pnl">—</span>
+                                    <span class="bot-kpi-sub" id="bot-kpi-pnl-sub"></span>
+                                </div>
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">TARGET PROFIT</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-target">—</span>
+                                    <div class="bot-progress"><div class="bot-progress-fill pos" id="bot-target-bar"></div></div>
+                                    <span class="bot-kpi-sub" id="bot-kpi-target-sub"></span>
+                                </div>
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">SESSION LOSS / MAX LOSS</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-loss">—</span>
+                                    <div class="bot-progress"><div class="bot-progress-fill neg" id="bot-loss-bar"></div></div>
+                                    <span class="bot-kpi-sub" id="bot-kpi-loss-sub"></span>
+                                </div>
+                                <div class="bot-kpi">
+                                    <span class="bot-kpi-label">AUTO-TRADES</span>
+                                    <span class="bot-kpi-val" id="bot-kpi-trades">—</span>
+                                    <span class="bot-kpi-sub" id="bot-kpi-trades-sub"></span>
+                                </div>
+                            </div>
+
+                            <div class="bot-main-grid">
+                                <!-- Configuration -->
+                                <section class="card manage-table-card bot-panel" id="bot-config-card">
+                                    <div class="card-header">
+                                        <div class="card-title">
+                                            <i class="fa-solid fa-sliders header-icon"></i>
+                                            <span>Bot Configuration</span>
+                                        </div>
+                                        <span id="bot-config-lock" class="badge badge-yellow hidden">LOCKED WHILE RUNNING</span>
+                                    </div>
+                                    <form id="bot-config-form" class="bot-config-form" onsubmit="return false;">
+                                        <div class="input-group">
+                                            <label for="bot-market">Market Category</label>
+                                            <div class="input-wrapper">
+                                                <i class="fa-solid fa-globe input-icon"></i>
+                                                <select id="bot-market" onchange="onBotMarketChange()"></select>
+                                            </div>
+                                        </div>
+                                        <div class="input-group">
+                                            <label>Assets <span class="bot-label-hint" id="bot-assets-hint"></span></label>
+                                            <div id="bot-asset-chips" class="bot-asset-chips"><div class="bot-chip-empty">Loading supported assets...</div></div>
+                                        </div>
+                                        <div class="input-group">
+                                            <label for="bot-capital">Allocated Capital (INR) <span class="bot-label-hint" id="bot-balance-hint"></span></label>
+                                            <div class="input-wrapper">
+                                                <i class="fa-solid fa-wallet input-icon"></i>
+                                                <input type="number" id="bot-capital" min="0" step="any" placeholder="e.g. 10000">
+                                                <button type="button" id="bot-max-btn" class="glow-btn btn-secondary bot-max-btn" onclick="setBotCapitalMax()">MAX</button>
+                                            </div>
+                                        </div>
+                                        <div class="autotrade-split-row">
+                                            <div class="input-group autotrade-split-col">
+                                                <label for="bot-target">Target Profit (INR)</label>
+                                                <div class="input-wrapper">
+                                                    <i class="fa-solid fa-bullseye input-icon"></i>
+                                                    <input type="number" id="bot-target" min="0" step="any">
+                                                </div>
+                                            </div>
+                                            <div class="input-group autotrade-split-col">
+                                                <label for="bot-maxloss">Max Loss (INR)</label>
+                                                <div class="input-wrapper">
+                                                    <i class="fa-solid fa-shield-halved input-icon"></i>
+                                                    <input type="number" id="bot-maxloss" min="0" step="any">
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="input-group">
+                                            <label for="bot-leverage">Leverage</label>
+                                            <div class="input-wrapper">
+                                                <i class="fa-solid fa-layer-group input-icon"></i>
+                                                <select id="bot-leverage"></select>
+                                            </div>
+                                        </div>
+                                        <div id="bot-config-error" class="bot-config-error hidden"></div>
+                                        <div class="bot-config-actions">
+                                            <button type="button" id="bot-save-btn" class="glow-btn btn-secondary" onclick="saveBotConfig()">
+                                                <i class="fa-solid fa-floppy-disk"></i> Save Configuration
+                                            </button>
+                                        </div>
+                                        <p class="bot-config-note">Saving stores the trading budget only. Capital is reserved as margin when the bot actually opens a trade. Target profit counts realized session P&amp;L. Stopping the bot never closes open positions.</p>
+                                    </form>
+                                </section>
+
+                                <!-- Live activity stream -->
+                                <section class="card manage-table-card bot-panel" id="bot-activity-card">
+                                    <div class="card-header">
+                                        <div class="card-title">
+                                            <i class="fa-solid fa-satellite-dish header-icon"></i>
+                                            <span>Live ORBIT AI Activity</span>
+                                        </div>
+                                        <div class="manage-live-indicator">
+                                            <span class="live-indicator-dot pulse"></span>
+                                            <span>● STREAM</span>
+                                        </div>
+                                    </div>
+                                    <div id="bot-activity-feed" class="bot-activity-feed">
+                                        <div class="table-empty-message">No activity yet.</div>
+                                    </div>
+                                </section>
+                            </div>
+
+                            <!-- Active auto-trades -->
+                            <section class="card manage-table-card">
+                                <div class="card-header">
+                                    <div class="card-title">
+                                        <i class="fa-solid fa-robot header-icon"></i>
+                                        <span>Active Auto-Trades</span>
+                                        <span class="subtab-count-badge" id="bot-active-count">0</span>
+                                    </div>
+                                </div>
+                                <div class="manage-table-wrap">
+                                    <table class="orbit-terminal-table">
+                                        <thead>
+                                            <tr>
+                                                <th>SYMBOL</th>
+                                                <th>SIDE</th>
+                                                <th>ENTRY</th>
+                                                <th>CURRENT</th>
+                                                <th>QUANTITY</th>
+                                                <th>LEVERAGE</th>
+                                                <th>POSITION SIZE</th>
+                                                <th>MARGIN</th>
+                                                <th>UNREALIZED P&amp;L</th>
+                                                <th>OPEN TIME</th>
+                                                <th>STATUS</th>
+                                                <th>ACTION</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="bot-active-tbody">
+                                            <tr><td colspan="12" class="table-empty-message">No active auto-trades.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
+
+                            <!-- History -->
+                            <section class="card manage-table-card">
+                                <div class="card-header">
+                                    <div class="manage-subtabs-bar bot-history-tabs">
+                                        <button id="bot-hist-btn-trades" class="manage-subtab-btn active" onclick="switchBotHistoryTab('trades')">
+                                            <i class="fa-solid fa-clock-rotate-left"></i>
+                                            <span>AUTO-TRADE HISTORY</span>
+                                            <span class="subtab-count-badge" id="bot-hist-trades-count">0</span>
+                                        </button>
+                                        <button id="bot-hist-btn-sessions" class="manage-subtab-btn" onclick="switchBotHistoryTab('sessions')">
+                                            <i class="fa-solid fa-list-check"></i>
+                                            <span>SESSION HISTORY</span>
+                                            <span class="subtab-count-badge" id="bot-hist-sessions-count">0</span>
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="bot-hist-trades" class="manage-table-wrap">
+                                    <table class="orbit-terminal-table">
+                                        <thead>
+                                            <tr>
+                                                <th>SYMBOL</th>
+                                                <th>SESSION</th>
+                                                <th>SIDE</th>
+                                                <th>ENTRY</th>
+                                                <th>EXIT</th>
+                                                <th>QTY</th>
+                                                <th>LEV</th>
+                                                <th>REALIZED P&amp;L</th>
+                                                <th>OUTCOME</th>
+                                                <th>OPENED</th>
+                                                <th>CLOSED</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="bot-hist-trades-tbody">
+                                            <tr><td colspan="11" class="table-empty-message">No completed auto-trades yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div id="bot-hist-sessions" class="manage-table-wrap hidden">
+                                    <table class="orbit-terminal-table">
+                                        <thead>
+                                            <tr>
+                                                <th>SESSION</th>
+                                                <th>STARTED</th>
+                                                <th>STOPPED</th>
+                                                <th>MARKET</th>
+                                                <th>ASSETS</th>
+                                                <th>ALLOCATED</th>
+                                                <th>TARGET</th>
+                                                <th>MAX LOSS</th>
+                                                <th>LEV</th>
+                                                <th>FINAL STATE</th>
+                                                <th>TRADES (W/L)</th>
+                                                <th>REALIZED P&amp;L</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="bot-hist-sessions-tbody">
+                                            <tr><td colspan="12" class="table-empty-message">No bot sessions yet.</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </section>
                         </div>
                     </div><!-- /tab-content-autotrade -->
 
@@ -2399,6 +2577,6 @@
 
     <!-- Custom 3D Scene Controls script -->
     <script src="three-scene.js?v=orbit_candleshift_v4"></script>
-    <script src="app.js?v=orbit_google_clerk_auth_v2"></script>
+    <script src="app.js?v=orbit_clerk_google_fix_v2"></script>
 </body>
 </html>

@@ -1,9 +1,12 @@
 import asyncio
 import csv
+import hmac
 import io
 import json
+import logging
 import os
 import random
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -11,7 +14,7 @@ from datetime import datetime
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import yfinance as yf
@@ -52,6 +55,8 @@ try:
     from backend.services.copilot_service import copilot_service
     from backend.services.position_service import position_service
     from backend.services.valkey_service import valkey_service
+    from backend.services.bot_service import BotEngine, BotConfigError, market_universe, validate_bot_config
+    from backend.models.bot import BotStartRequest, BotStopRequest
     from backend.models.copilot import CopilotChatRequest, ConversationCreate
     from backend.agents.chart_analyst import find_support_resistance
     from backend.agents.indicator_analyst import analyze_indicators
@@ -80,6 +85,8 @@ except ImportError:
     from services.copilot_service import copilot_service
     from services.position_service import position_service
     from services.valkey_service import valkey_service
+    from services.bot_service import BotEngine, BotConfigError, market_universe, validate_bot_config
+    from models.bot import BotStartRequest, BotStopRequest
     from models.copilot import CopilotChatRequest, ConversationCreate
     from agents.chart_analyst import find_support_resistance
     from agents.indicator_analyst import analyze_indicators
@@ -94,10 +101,16 @@ except ImportError:
     from agents.execution_agent import check_and_execute_trades
     from agents.portfolio_monitor import monitor_positions
 
+logger = logging.getLogger("orbit.main")
+
 # Seconds between price ticks in the live simulation loop.
 TICK_INTERVAL_SECONDS = 4
-# Seconds between full autotrade market scans.
-AUTOTRADE_SCAN_SECONDS = 180
+
+# Go gateway (backend/) — Auto-Trade Bot scheduling and user-scoped event
+# fan-out. The shared token authenticates /internal/* calls in both
+# directions; without it only loopback callers are accepted.
+GATEWAY_INTERNAL_URL = os.getenv("GATEWAY_INTERNAL_URL", "http://127.0.0.1:8000").rstrip("/")
+INTERNAL_TOKEN = os.getenv("ORBIT_INTERNAL_TOKEN", "").strip()
 
 # ---------------------------------------------------------------------------
 # Phase 11 — orbit-stream Go hub integration
@@ -141,15 +154,15 @@ async def lifespan(app: FastAPI):
     print("MARKET SERVICE: READY", flush=True)
     print("WEBSOCKET: READY", flush=True)
 
-    scanner = asyncio.create_task(autotrade_scanner_loop())
+    # The Auto-Trade Bot has no loop here: the Go gateway's scheduler
+    # (backend/botsched) drives it through the /internal/bot/* step endpoints.
     market_scheduler = asyncio.create_task(market_tick_scheduler_loop())
     try:
         yield
     finally:
-        scanner.cancel()
         market_scheduler.cancel()
         try:
-            await asyncio.gather(scanner, market_scheduler, return_exceptions=True)
+            await asyncio.gather(market_scheduler, return_exceptions=True)
         except Exception:
             pass
         valkey_service.close()
@@ -948,19 +961,51 @@ def api_resend_otp(req: ResendOtpRequest):
 
 class BotConfigRequest(BaseModel):
     user_id: int
-    assets: str
-    total_capital: float
-    max_risk_per_trade: float
-    min_profit_target: float
-    max_profit_target: float
-    is_active: bool
+    assets: str | list[str]
+    # Legacy field names (min_profit_target = session target profit,
+    # max_profit_target = session max loss — as the original form used them).
+    total_capital: Optional[float] = None
+    max_risk_per_trade: Optional[float] = None
+    min_profit_target: Optional[float] = None
+    max_profit_target: Optional[float] = None
+    is_active: Optional[bool] = None
+    # Control-center field names
+    market_category: Optional[str] = None
+    allocated_capital: Optional[float] = None
+    target_profit: Optional[float] = None
+    max_loss: Optional[float] = None
+    leverage: Optional[float] = None
+
+
+def _infer_bot_category(assets) -> Optional[str]:
+    wanted = {str(a).strip().upper() for a in assets if str(a).strip()}
+    for cat in market_universe():
+        if wanted and wanted <= {x["symbol"].upper() for x in cat["assets"]}:
+            return cat["id"]
+    return None
+
+
+def _format_bot_config(config: dict, is_live: bool) -> dict:
+    config = dict(config)
+    # The legacy is_active flag is no longer authoritative; a live session is.
+    config["is_active"] = is_live
+    config["assets_list"] = [a.strip().upper() for a in str(config.get("assets") or "").split(",") if a.strip()]
+    config["allocated_capital"] = config.get("total_capital")
+    config["target_profit"] = config.get("min_profit_target")
+    config["max_loss"] = config.get("max_profit_target")
+    return config
+
 
 @app.get("/api/bot-config")
-def api_get_bot_config(user_id: int):
-    config = db.get_bot_config(user_id)
+async def api_get_bot_config(user_id: int):
+    await _require_user(user_id)  # get_bot_config inserts a default row, so the account must exist first
+    config, live = await asyncio.gather(
+        asyncio.to_thread(db.get_bot_config, user_id),
+        asyncio.to_thread(db.get_live_bot_session, user_id),
+    )
     if not config:
         raise HTTPException(status_code=404, detail="Bot config not found")
-    return {"ok": True, "config": config}
+    return {"ok": True, "config": _format_bot_config(config, bool(live))}
 
 @app.get("/api/report")
 def api_get_report(user_id: int = 1):
@@ -1001,9 +1046,42 @@ def api_export_report_csv(user_id: int):
 
 
 @app.post("/api/bot-config")
-def api_update_bot_config(req: BotConfigRequest):
-    db.update_bot_config(req.user_id, req.dict())
-    return {"ok": True, "message": "Bot configuration updated"}
+async def api_update_bot_config(req: BotConfigRequest):
+    """
+    Save the bot configuration. Saving never reserves or deducts capital.
+    Legacy clients that flip is_active start/stop a session through the same
+    validated path as /api/bot/session/start|stop.
+    """
+    await _require_user(req.user_id)
+    assets = req.assets if isinstance(req.assets, list) else str(req.assets).split(",")
+    category = req.market_category or _infer_bot_category(assets)
+    balance = await asyncio.to_thread(db.get_user_balance, req.user_id)
+    try:
+        clean = validate_bot_config(
+            category,
+            assets,
+            req.allocated_capital if req.allocated_capital is not None else req.total_capital,
+            req.target_profit if req.target_profit is not None else req.min_profit_target,
+            req.max_loss if req.max_loss is not None else req.max_profit_target,
+            req.leverage if req.leverage is not None else 1.0,
+            balance,
+            bot_engine.policy,
+        )
+    except BotConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    live = await asyncio.to_thread(db.get_live_bot_session, req.user_id)
+    await asyncio.to_thread(BotEngine.save_config, req.user_id, clean, bool(live))
+    session = None
+    try:
+        if req.is_active is True and not live:
+            session = await bot_engine.start_session(req.user_id, clean)
+        elif req.is_active is False and live:
+            session = await bot_engine.stop_session(req.user_id, "Stopped from the configuration toggle")
+    except db.BotSessionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except (ValueError, LookupError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "message": "Bot configuration updated", "config": clean, "session": session}
 
 
 # ---------------------------------------------------------------------------
@@ -1054,9 +1132,11 @@ async def api_get_trades_history(
     side: Optional[str] = None,
     outcome: Optional[str] = None,
     limit: int = 20,
-    offset: int = 0
+    offset: int = 0,
+    source: Optional[str] = None,
+    bot_session_id: Optional[int] = None
 ):
-    """Paginated completed trade history with filters."""
+    """Paginated completed trade history with filters (source=bot|manual, bot_session_id)."""
     try:
         res = await position_service.get_trade_history_paginated(
             user_id=user_id,
@@ -1065,7 +1145,9 @@ async def api_get_trades_history(
             side=side,
             outcome=outcome,
             limit=limit,
-            offset=offset
+            offset=offset,
+            source=source,
+            bot_session_id=bot_session_id
         )
         return {
             "ok": True,
@@ -1130,48 +1212,26 @@ async def api_open_trade(req: OpenTradeRequest):
     except Exception:
         price = 100.0
 
-    margin = (req.quantity * price) / leverage
-
-    # 2. Permanent database transaction (atomic balance validation, margin reservation, trade insert, audit execution)
-    trade_id, res_balance = await asyncio.to_thread(
-        db.open_active_trade_atomic,
-        user_id,
-        symbol,
-        side,
-        req.quantity,
-        price,
-        leverage,
-        req.sl or 0.0,
-        req.target or 0.0,
-        req.market or ("Crypto" if "-" in symbol else "Stock")
-    )
-    if not trade_id:
-        raise HTTPException(status_code=400, detail=str(res_balance))
-
-    # 3. Store active state in Valkey
-    trade_dict = {
-        "id": trade_id,
-        "trade_id": trade_id,
-        "user_id": user_id,
-        "symbol": symbol,
-        "side": side,
-        "entry_price": price,
-        "current_price": price,
-        "quantity": req.quantity,
-        "remaining_quantity": req.quantity,
-        "leverage": leverage,
-        "margin_used": margin,
-        "position_size": req.quantity * price,
-        "unrealized_pnl": 0.0,
-        "unrealized_pnl_percent": 0.0,
-        "status": "active",
-        "opened_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat()
-    }
-    valkey_service.set(f"trade:active:{trade_id}", trade_dict, ttl_seconds=300)
-    valkey_service.sadd(f"user:{user_id}:active_trades", str(trade_id))
-    valkey_service.sadd(f"symbol:{symbol}:active_trades", str(trade_id))
-    valkey_service.delete(f"dashboard:{user_id}:metrics")
+    # 2 & 3. Shared execution path (also used by the Auto-Trade Bot): atomic
+    # balance validation, margin reservation, trade insert and audit record in
+    # one transaction, then the Valkey live-state indices.
+    try:
+        opened = await position_service.open_market_position(
+            user_id,
+            symbol,
+            side,
+            req.quantity,
+            leverage=leverage,
+            sl=req.sl or 0.0,
+            target=req.target or 0.0,
+            market=req.market or ("Crypto" if "-" in symbol else "Stock"),
+            price=price,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    trade_dict = opened["trade"]
+    trade_id = trade_dict["id"]
+    res_balance = opened["balance"]
 
     # 4. Broadcast real-time WebSocket events
     await manager.send_to_user(user_id, {"type": "trade_opened", "data": trade_dict})
@@ -1227,6 +1287,10 @@ async def api_close_position(trade_id: int, req: ClosePositionRequest):
             if float(close_qty) <= 0:
                 raise HTTPException(status_code=400, detail="Close quantity must be positive.")
             result = await position_service.close_position_partially(trade_id, req.user_id, float(close_qty))
+
+        # Auto-Trade Bot trades: activity event, session metrics and target / max-loss checks.
+        if pos.get("bot_session_id"):
+            await bot_engine.on_trade_closed(pos, result)
 
         summary = result.get("summary") or await position_service.get_account_and_dashboard_summary(req.user_id)
         wallet_balance = summary.get("account", {}).get("total_capital", 0.0)
@@ -1928,118 +1992,247 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
         stop_pipeline(websocket)
         manager.disconnect(websocket)
 
-async def autotrade_scanner_loop():
-    while True:
-        try:
-            active_configs = db.get_all_active_bot_configs()
-            for config in active_configs:
-                user_id = config["user_id"]
-                
-                # Check overall Profit/Loss goals to see if we should stop trading
-                active_pos = db.get_active_positions(user_id)
-                history_pos = db.get_trade_history(user_id)
-                total_pnl = sum(p.get("pnl", 0) for p in active_pos) + sum(p.get("pnl", 0) for p in history_pos)
-                
-                target_profit = config["min_profit_target"] # Used as Daily Target Profit
-                max_loss = config["max_profit_target"]      # Used as Daily Max Loss
-                
-                if total_pnl >= target_profit or total_pnl <= -max_loss:
-                    print(f"User {user_id} hit PnL bounds ({total_pnl}). Target: {target_profit}, Max Loss: -{max_loss}. Disabling bot.")
-                    config["is_active"] = False
-                    db.update_bot_config(user_id, config)
-                    continue
-                    
-                # User requested: "at time only one request is done"
-                # Do not open new trades if there is already an active trade
-                if len(active_pos) > 0:
-                    continue
+# ---------------------------------------------------------------------------
+# Auto-Trade Bot — event delivery, REST API and Go scheduler step endpoints
+# ---------------------------------------------------------------------------
+# The legacy autotrade_scanner_loop (a Python asyncio loop over bot_config
+# rows) is gone. Scheduling and concurrency live in the Go gateway
+# (backend/botsched); this process executes single steps when asked.
 
-                assets = [a.strip() for a in config["assets"].split(",")]
-                for asset in assets:
-                    if not asset: continue
-                    # 1. Fetch live data via centralized MarketDataService
-                    try:
-                        snapshot = await market_service.get_historical_snapshot(asset, period="60d", interval="1d")
-                        hist = await market_service.get_normalized_dataframe(asset, period="60d", interval="1d")
-                        current_price = snapshot.quote.price
-                    except Exception:
-                        continue
+_gateway_publish_down_until = 0.0
 
-                    if current_price <= 0 or hist.empty:
-                        continue
 
-                    # 2. Run Agents headless (also off the event loop - these
-                    #    make network and Gemini calls)
-                    sr_data = await asyncio.to_thread(find_support_resistance, hist)
-                    news_sentiment = await asyncio.to_thread(analyze_sentiment, asset)
-                    sentiment_score = news_sentiment.get("score", 0.0)
-                    strategy_res = await asyncio.to_thread(
-                        evaluate_strategies, hist, sr_data["supports"], sr_data["resistances"]
-                    )
+def _publish_via_gateway(user_id: int, message: dict) -> int:
+    """
+    Hand a user-scoped event to the Go gateway, which fans it out to that
+    user's proxied sockets. Returns the number of sockets reached, or -1 when
+    the gateway is unreachable (then skipped for a short back-off).
+    """
+    global _gateway_publish_down_until
+    if time.time() < _gateway_publish_down_until:
+        return -1
+    try:
+        import urllib.request
+        body = json.dumps({"user_id": str(user_id), "message": message}, default=str).encode()
+        req = urllib.request.Request(
+            f"{GATEWAY_INTERNAL_URL}/internal/events/publish",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "X-Orbit-Internal-Token": INTERNAL_TOKEN},
+        )
+        with urllib.request.urlopen(req, timeout=0.5) as resp:
+            return int(json.loads(resp.read() or b"{}").get("delivered", 0))
+    except Exception:
+        _gateway_publish_down_until = time.time() + 15.0
+        return -1
 
-                    if strategy_res.get("signal") not in ("buy", "sell"):
-                        continue
 
-                    # 3. Plan Trade
-                    trade_setup = await asyncio.to_thread(
-                        plan_trade,
-                        strategy_res,
-                        sentiment_score,
-                        sr_data["supports"],
-                        sr_data["resistances"],
-                        current_price,
-                        config["total_capital"],
-                    )
+async def publish_to_user(user_id: int, message: dict):
+    """Go gateway fan-out first; the Python socket manager only when no gateway socket took the event."""
+    delivered = await asyncio.to_thread(_publish_via_gateway, user_id, message)
+    if delivered <= 0:
+        await manager.send_to_user(user_id, message)
 
-                    # The planner can veto a signal (sentiment conflict, bad
-                    # price, empty wallet). Reading entry/sl unconditionally
-                    # used to raise KeyError and kill the whole scanner loop.
-                    if trade_setup["action"] not in ("buy", "sell"):
-                        continue
 
-                    # Adjust max risk
-                    risk_per_share = abs(trade_setup["entry"] - trade_setup["sl"])
-                    if risk_per_share > 0:
-                        qty = min(trade_setup["quantity"], config["max_risk_per_trade"] / risk_per_share)
-                    else:
-                        qty = trade_setup["quantity"]
+bot_engine = BotEngine(publish=publish_to_user)
 
-                    potential_profit = abs(trade_setup["target"] - trade_setup["entry"]) * qty
 
-                    # If the opportunity offers a positive reward, execute automatically
-                    if qty > 0 and potential_profit > 0:
-                        # Execute immediately without waiting for confirmation
-                        trade_id = db.create_pending_trade(
-                            user_id, asset, trade_setup["action"], qty,
-                            trade_setup["entry"], trade_setup["sl"], trade_setup["target"]
-                        )
-                        if not db.execute_trade(trade_id, current_price):
-                            await manager.send_to_user(user_id, {
-                                "type": "log", "agent": "Auto-Trade Bot",
-                                "message": f"AUTOTRADE SKIPPED: insufficient balance for {asset}.",
-                                "time": datetime.now().strftime("%H:%M:%S"),
-                            })
-                            continue
+async def _require_user(user_id: int) -> dict:
+    """
+    Resolve the acting account. Identity is still the client-supplied user_id
+    (the app has no server-side session yet); every bot query is scoped to it,
+    so one account can never read or control another account's sessions.
+    """
+    user = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return user
 
-                        # Notify ONLY this bot's owner. Broadcasting pushed one
-                        # user's wallet and positions into every open browser.
-                        await manager.send_to_user(user_id, {
-                            "type": "log", "agent": "Auto-Trade Bot",
-                            "message": f"🤖 AUTOTRADE FIRED: {trade_setup['action'].upper()} {asset} @ {trade_setup['entry']:.2f}",
-                            "time": datetime.now().strftime("%H:%M:%S"),
-                        })
-                        await manager.send_to_user(user_id, {"type": "positions", "positions": db.get_active_positions(user_id)})
-                        await manager.send_to_user(user_id, {"type": "wallet", "balance": db.get_user_balance(user_id)})
-                        summary = await position_service.get_account_and_dashboard_summary(user_id)
-                        await manager.send_to_user(user_id, {"type": "dashboard_summary", "data": summary})
 
-            # Wait before the next global scan
-            await asyncio.sleep(AUTOTRADE_SCAN_SECONDS)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            print(f"Autotrade scanner error: {e}")
-            await asyncio.sleep(60)
+async def _require_owned_session(session_id: int, user_id: int) -> dict:
+    session = await asyncio.to_thread(db.get_bot_session, session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Bot session not found.")
+    return session
+
+
+@app.get("/api/bot/universe")
+async def api_bot_universe(user_id: Optional[int] = None):
+    """Market categories, their tradable symbols and the supported leverage values."""
+    data = {"ok": True, "categories": market_universe(), "policy": bot_engine.policy.public()}
+    if user_id is not None:
+        _, data["available_balance"] = await asyncio.gather(
+            _require_user(user_id), asyncio.to_thread(db.get_user_balance, user_id))
+    return data
+
+
+@app.get("/api/bot/session/current")
+async def api_bot_current_session(user_id: int):
+    """The live session (or the most recent one) with live metrics and its open auto-trades."""
+    await _require_user(user_id)  # get_bot_config inserts a default row, so the account must exist first
+    # Independent reads, each a database round trip: run them together.
+    session, config, balance = await asyncio.gather(
+        bot_engine.current_view(user_id),
+        asyncio.to_thread(db.get_bot_config, user_id),
+        asyncio.to_thread(db.get_user_balance, user_id),
+    )
+    return {
+        "ok": True,
+        "session": session,
+        "config": _format_bot_config(config, bool(session and session["is_live"])) if config else None,
+        "available_balance": balance,
+        "scheduler_online": bot_engine.scheduler_online(),
+        "policy": bot_engine.policy.public(),
+    }
+
+
+@app.get("/api/bot/session/history")
+async def api_bot_session_history(user_id: int, limit: int = 20, offset: int = 0):
+    _, res = await asyncio.gather(
+        _require_user(user_id),
+        asyncio.to_thread(db.list_bot_sessions_with_metrics, user_id, max(1, min(100, limit)), max(0, offset)),
+    )
+    return {"ok": True, **res}
+
+
+@app.post("/api/bot/session/start")
+async def api_bot_start_session(req: BotStartRequest):
+    await _require_user(req.user_id)
+    try:
+        session = await bot_engine.start_session(req.user_id, req.model_dump())
+    except db.BotSessionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:  # BotConfigError is a ValueError
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "session": session}
+
+
+@app.post("/api/bot/session/stop")
+async def api_bot_stop_session(req: BotStopRequest):
+    """Graceful stop: no new scans or entries; open positions are kept."""
+    await _require_user(req.user_id)
+    try:
+        session = await bot_engine.stop_session(req.user_id, req.reason)
+    except LookupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"ok": True, "session": session}
+
+
+@app.get("/api/bot/session/{session_id}")
+async def api_bot_session_detail(session_id: int, user_id: int):
+    session = await _require_owned_session(session_id, user_id)  # scoped to the account; 404 otherwise
+    return {"ok": True, "session": await bot_engine.snapshot(session)}
+
+
+@app.get("/api/bot/session/{session_id}/trades")
+async def api_bot_session_trades(session_id: int, user_id: int, status: str = "all"):
+    session = await _require_owned_session(session_id, user_id)  # scoped to the account; 404 otherwise
+    open_trades, closed = [], []
+    if status in ("all", "open"):
+        positions = await position_service.get_live_open_positions(user_id)
+        open_trades = [p for p in positions if p.get("bot_session_id") == session["id"]]
+    if status in ("all", "closed"):
+        closed = await asyncio.to_thread(db.get_bot_session_trades, session["id"], "closed")
+    return {"ok": True, "session_id": session["id"], "open": open_trades, "closed": closed}
+
+
+@app.get("/api/bot/session/{session_id}/activity")
+async def api_bot_session_activity(session_id: int, user_id: int, limit: int = 100):
+    session = await _require_owned_session(session_id, user_id)  # scoped to the account; 404 otherwise
+    events = await asyncio.to_thread(bot_engine.activity, session["id"], max(1, min(300, limit)))
+    return {"ok": True, "session_id": session["id"], "events": events}
+
+
+def _require_internal(request: Request):
+    """
+    Guard for the Go scheduler's step endpoints. With ORBIT_INTERNAL_TOKEN set
+    the shared header is required; without it only loopback callers pass.
+    Browser requests (they carry an Origin header) are always refused.
+    """
+    if request.headers.get("origin"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if INTERNAL_TOKEN:
+        if not hmac.compare_digest(request.headers.get("x-orbit-internal-token", ""), INTERNAL_TOKEN):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="Forbidden: set ORBIT_INTERNAL_TOKEN for non-loopback schedulers.")
+
+
+_internal = [Depends(_require_internal)]
+
+
+class SchedulerHeartbeatRequest(BaseModel):
+    owner: str
+    ttl_seconds: int = 15
+
+
+class BotAttachRequest(BaseModel):
+    recovered: bool = False
+
+
+class BotAnalyzeRequest(BaseModel):
+    symbol: str
+
+
+class BotEvaluateRequest(BaseModel):
+    symbol: str
+    analysis_id: str = ""
+
+
+class BotFailRequest(BaseModel):
+    error: str
+
+
+@app.post("/internal/bot/scheduler/heartbeat", dependencies=_internal)
+async def internal_bot_heartbeat(req: SchedulerHeartbeatRequest):
+    return await asyncio.to_thread(bot_engine.heartbeat, req.owner, max(5, min(120, req.ttl_seconds)))
+
+
+@app.get("/internal/bot/scheduler/sessions", dependencies=_internal)
+async def internal_bot_sessions():
+    return {"sessions": await bot_engine.scheduler_sessions()}
+
+
+@app.post("/internal/bot/sessions/{session_id}/attach", dependencies=_internal)
+async def internal_bot_attach(session_id: int, req: BotAttachRequest):
+    return await bot_engine.attach(session_id, req.recovered)
+
+
+@app.post("/internal/bot/sessions/{session_id}/monitor", dependencies=_internal)
+async def internal_bot_monitor(session_id: int):
+    return await bot_engine.monitor(session_id)
+
+
+@app.post("/internal/bot/sessions/{session_id}/scan/begin", dependencies=_internal)
+async def internal_bot_begin_scan(session_id: int):
+    return await bot_engine.begin_scan(session_id)
+
+
+@app.post("/internal/bot/analysis", dependencies=_internal)
+async def internal_bot_analyze(req: BotAnalyzeRequest):
+    return await bot_engine.analyze(req.symbol)
+
+
+@app.post("/internal/bot/sessions/{session_id}/evaluate", dependencies=_internal)
+async def internal_bot_evaluate(session_id: int, req: BotEvaluateRequest):
+    return await bot_engine.evaluate(session_id, req.symbol, req.analysis_id)
+
+
+@app.post("/internal/bot/sessions/{session_id}/scan/complete", dependencies=_internal)
+async def internal_bot_complete_scan(session_id: int):
+    return await bot_engine.complete_scan(session_id)
+
+
+@app.post("/internal/bot/sessions/{session_id}/finalize-stop", dependencies=_internal)
+async def internal_bot_finalize_stop(session_id: int):
+    return await bot_engine.finalize_stop(session_id)
+
+
+@app.post("/internal/bot/sessions/{session_id}/fail", dependencies=_internal)
+async def internal_bot_fail(session_id: int, req: BotFailRequest):
+    return await bot_engine.fail_session(session_id, req.error)
 
 
 async def market_tick_scheduler_loop():

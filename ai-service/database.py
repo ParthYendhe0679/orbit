@@ -50,6 +50,42 @@ def get_placeholder():
 def get_user_table():
     return '"user"' if IS_POSTGRES else 'user'
 
+
+def _for_update():
+    """Row-lock suffix for SELECTs inside a read-check-write transaction (Postgres only)."""
+    return " FOR UPDATE" if IS_POSTGRES else ""
+
+
+def _begin_write(cursor):
+    """
+    Serialize a read-check-write sequence.
+
+    SQLite has no row locks, so take the database write lock before the first
+    read; Postgres relies on the FOR UPDATE row locks taken by the SELECTs.
+    """
+    if not IS_POSTGRES:
+        cursor.execute("BEGIN IMMEDIATE")
+
+
+# ---------------------------------------------------------------------------
+# Auto-Trade Bot session states (mirrors backend.models.bot.BotSessionStatus)
+# ---------------------------------------------------------------------------
+# States in which a session scans and may open new trades.
+BOT_ENTRY_STATUSES = ("STARTING", "SCANNING", "ANALYZING", "OPPORTUNITY_FOUND", "TRADE_ACTIVE", "WAITING")
+# Every non-terminal state. At most one session per user may be in one of these.
+BOT_LIVE_STATUSES = BOT_ENTRY_STATUSES + ("STOPPING",)
+BOT_TERMINAL_STATUSES = ("STOPPED", "TARGET_REACHED", "MAX_LOSS_REACHED", "ERROR")
+
+
+class BotSessionConflictError(Exception):
+    """The user already has a live bot session."""
+
+
+def _is_unique_violation(err: Exception) -> bool:
+    if isinstance(err, sqlite3.IntegrityError):
+        return "UNIQUE" in str(err).upper()
+    return getattr(err, "pgcode", None) == "23505"
+
 def init_db():
     conn = get_connection()
     # Use standard connection cursor for table creation (non-dict)
@@ -72,6 +108,31 @@ def init_db():
                 cursor.execute(f'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS {col_name} {col_type}')
             except Exception as e:
                 print(f"Postgres column migration error for {col_name}: {e}")
+
+        # One row per Auto-Trade Bot run. The session snapshots its own
+        # configuration; P&L and trade counts are derived from the trades it
+        # opened (trades.bot_session_id), never stored twice.
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_sessions (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+            status VARCHAR(30) NOT NULL DEFAULT 'STARTING',
+            market_category VARCHAR(50) NOT NULL,
+            selected_assets TEXT NOT NULL,
+            allocated_capital DOUBLE PRECISION NOT NULL,
+            target_profit DOUBLE PRECISION NOT NULL,
+            max_loss DOUBLE PRECISION NOT NULL,
+            leverage DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+            stop_reason VARCHAR(255),
+            last_error TEXT,
+            scan_count INTEGER NOT NULL DEFAULT 0,
+            last_scan_at VARCHAR(50),
+            started_at VARCHAR(50),
+            stopped_at VARCHAR(50),
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL
+        )
+        """)
 
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
@@ -99,7 +160,9 @@ def init_db():
             ("remaining_quantity", "DOUBLE PRECISION"),
             ("market", "VARCHAR(50) DEFAULT 'Crypto'"),
             ("realized_pnl", "DOUBLE PRECISION DEFAULT 0.0"),
-            ("closed_at", "VARCHAR(50)")
+            ("closed_at", "VARCHAR(50)"),
+            ("source", "VARCHAR(20) DEFAULT 'manual'"),
+            ("bot_session_id", "INTEGER REFERENCES bot_sessions(id) ON DELETE SET NULL")
         ]:
             try:
                 cursor.execute(f'ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col_name} {col_type}')
@@ -132,6 +195,11 @@ def init_db():
             is_active BOOLEAN NOT NULL DEFAULT FALSE
         )
         """)
+        for col_name, col_type in [("market_category", "VARCHAR(50) DEFAULT 'Crypto'"), ("leverage", "DOUBLE PRECISION DEFAULT 1.0")]:
+            try:
+                cursor.execute(f'ALTER TABLE bot_config ADD COLUMN IF NOT EXISTS {col_name} {col_type}')
+            except Exception as e:
+                print(f"Postgres bot_config migration error for {col_name}: {e}")
 
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS conversations (
@@ -175,6 +243,28 @@ def init_db():
                     cursor.execute(f"ALTER TABLE user ADD COLUMN {col_def[0]} {col_def[1]}")
                 except Exception:
                     pass
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bot_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'STARTING',
+            market_category TEXT NOT NULL,
+            selected_assets TEXT NOT NULL,
+            allocated_capital REAL NOT NULL,
+            target_profit REAL NOT NULL,
+            max_loss REAL NOT NULL,
+            leverage REAL NOT NULL DEFAULT 1.0,
+            stop_reason TEXT,
+            last_error TEXT,
+            scan_count INTEGER NOT NULL DEFAULT 0,
+            last_scan_at TEXT,
+            started_at TEXT,
+            stopped_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
+        )
+        """)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -261,7 +351,9 @@ def init_db():
             ("remaining_quantity", "REAL"),
             ("market", "TEXT DEFAULT 'Crypto'"),
             ("realized_pnl", "REAL DEFAULT 0.0"),
-            ("closed_at", "TEXT")
+            ("closed_at", "TEXT"),
+            ("source", "TEXT DEFAULT 'manual'"),
+            ("bot_session_id", "INTEGER REFERENCES bot_sessions(id) ON DELETE SET NULL")
         ]
         for col_name, col_type in sqlite_trade_migrations:
             if col_name not in columns:
@@ -269,6 +361,15 @@ def init_db():
                     cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
                 except Exception as e:
                     print(f"SQLite migration error for {col_name}: {e}")
+
+        cursor.execute("PRAGMA table_info(bot_config)")
+        bot_config_cols = [col[1] for col in cursor.fetchall()]
+        for col_name, col_type in [("market_category", "TEXT DEFAULT 'Crypto'"), ("leverage", "REAL DEFAULT 1.0")]:
+            if col_name not in bot_config_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE bot_config ADD COLUMN {col_name} {col_type}")
+                except Exception as e:
+                    print(f"SQLite bot_config migration error for {col_name}: {e}")
 
     # Backfill legacy trades with default quantities and leverage if missing
     try:
@@ -279,8 +380,22 @@ def init_db():
         cursor.execute("UPDATE trades SET margin_used = (quantity * entry_price) WHERE margin_used IS NULL OR margin_used = 0.0")
         cursor.execute("UPDATE trades SET market = 'Crypto' WHERE market IS NULL")
         cursor.execute("UPDATE trades SET realized_pnl = pnl WHERE realized_pnl IS NULL AND status = 'closed'")
+        cursor.execute("UPDATE trades SET source = 'manual' WHERE source IS NULL")
     except Exception as e:
         print(f"Backfill legacy trades error: {e}")
+
+    # Auto-Trade Bot indexes. The partial unique index is what makes "one live
+    # session per user" hold under concurrent start requests.
+    live_list = ", ".join(f"'{s}'" for s in BOT_LIVE_STATUSES)
+    for ddl in (
+        "CREATE INDEX IF NOT EXISTS ix_trades_bot_session ON trades(bot_session_id)",
+        "CREATE INDEX IF NOT EXISTS ix_bot_sessions_user ON bot_sessions(user_id)",
+        f"CREATE UNIQUE INDEX IF NOT EXISTS ux_bot_sessions_one_live_per_user ON bot_sessions(user_id) WHERE status IN ({live_list})",
+    ):
+        try:
+            cursor.execute(ddl)
+        except Exception as e:
+            print(f"Bot index migration error: {e}")
                 
     # Initialize default user if not exists
     u = get_user_table()
@@ -565,7 +680,9 @@ def update_bot_config(user_id, config):
                 max_risk_per_trade = {placeholder},
                 min_profit_target = {placeholder},
                 max_profit_target = {placeholder},
-                is_active = {placeholder}
+                is_active = {placeholder},
+                market_category = {placeholder},
+                leverage = {placeholder}
             WHERE user_id = {placeholder}
         """, (
             config.get('assets', 'BTC-USD'),
@@ -574,6 +691,8 @@ def update_bot_config(user_id, config):
             float(config.get('min_profit_target', 200.0)),
             float(config.get('max_profit_target', 1000.0)),
             is_active_val,
+            config.get('market_category') or 'Crypto',
+            float(config.get('leverage') or 1.0),
             user_id
         ))
         conn.commit()
@@ -583,6 +702,337 @@ def update_bot_config(user_id, config):
     finally:
         cursor.close()
         conn.close()
+
+
+# --- Auto-Trade Bot Session Methods ---
+
+# Session metrics are aggregated from the trades a session opened, so partial
+# and full closes (whichever code path performs them) are reflected without
+# any extra bookkeeping.
+_BOT_AGGREGATE_COLUMNS = """
+    COALESCE(SUM(realized_pnl), 0.0) AS realized_pnl,
+    COALESCE(SUM(CASE WHEN outcome IS NULL OR outcome <> 'cancelled' THEN 1 ELSE 0 END), 0) AS total_trades,
+    COALESCE(SUM(CASE WHEN status = 'closed' AND realized_pnl > 0 THEN 1 ELSE 0 END), 0) AS winning_trades,
+    COALESCE(SUM(CASE WHEN status = 'closed' AND realized_pnl < 0 THEN 1 ELSE 0 END), 0) AS losing_trades,
+    COALESCE(SUM(CASE WHEN status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0) THEN 1 ELSE 0 END), 0) AS open_trades,
+    COALESCE(SUM(CASE WHEN status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0) THEN margin_used ELSE 0 END), 0.0) AS used_capital
+"""
+
+
+def _normalize_bot_aggregates(row) -> dict:
+    d = dict(row) if row else {}
+    return {
+        "realized_pnl": float(d.get("realized_pnl") or 0.0),
+        "total_trades": int(d.get("total_trades") or 0),
+        "winning_trades": int(d.get("winning_trades") or 0),
+        "losing_trades": int(d.get("losing_trades") or 0),
+        "open_trades": int(d.get("open_trades") or 0),
+        "used_capital": float(d.get("used_capital") or 0.0),
+    }
+
+
+def _session_from_row(row) -> dict:
+    s = dict(row)
+    try:
+        s["assets"] = _json.loads(s.get("selected_assets") or "[]")
+    except (TypeError, ValueError):
+        s["assets"] = [a.strip() for a in str(s.get("selected_assets") or "").split(",") if a.strip()]
+    return s
+
+
+def create_bot_session(user_id, market_category, assets, allocated_capital, target_profit, max_loss, leverage) -> dict:
+    """
+    Insert a new session in STARTING state.
+
+    The allocation is re-checked against the wallet balance inside the same
+    transaction, and the partial unique index rejects a second live session for
+    the user, so two concurrent start requests cannot both succeed. Nothing is
+    deducted here: margin only moves when a trade is actually opened.
+    Raises BotSessionConflictError or ValueError.
+    """
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+    now_iso = datetime.now().isoformat()
+    try:
+        _begin_write(cursor)
+        cursor.execute(f"SELECT balance FROM {u} WHERE id = {p}{_for_update()}", (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise ValueError("User account not found.")
+        balance = float(row["balance"])
+        if float(allocated_capital) > balance:
+            raise ValueError(f"Allocated capital {float(allocated_capital):.2f} exceeds available balance {balance:.2f}.")
+
+        values = (user_id, market_category, _json.dumps(list(assets)), float(allocated_capital),
+                  float(target_profit), float(max_loss), float(leverage), now_iso, now_iso, now_iso)
+        insert_sql = f"""
+        INSERT INTO bot_sessions (user_id, status, market_category, selected_assets, allocated_capital, target_profit, max_loss, leverage, started_at, created_at, updated_at)
+        VALUES ({p}, 'STARTING', {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+        """
+        if IS_POSTGRES:
+            cursor.execute(insert_sql + " RETURNING id", values)
+            session_id = cursor.fetchone()["id"]
+        else:
+            cursor.execute(insert_sql, values)
+            session_id = cursor.lastrowid
+        cursor.execute(f"SELECT * FROM bot_sessions WHERE id = {p}", (session_id,))
+        session = _session_from_row(cursor.fetchone())
+        conn.commit()
+        return session
+    except Exception as err:
+        conn.rollback()
+        if _is_unique_violation(err):
+            raise BotSessionConflictError("A bot session is already running for this account.") from err
+        raise
+    finally:
+        conn.close()
+
+
+def get_bot_session(session_id, user_id=None):
+    """Fetch one session; with user_id, only if it belongs to that user."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    try:
+        if user_id is not None:
+            cursor.execute(f"SELECT * FROM bot_sessions WHERE id = {p} AND user_id = {p}", (session_id, user_id))
+        else:
+            cursor.execute(f"SELECT * FROM bot_sessions WHERE id = {p}", (session_id,))
+        row = cursor.fetchone()
+        return _session_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_live_bot_session(user_id):
+    """The user's non-terminal session (running or stopping), if any."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    placeholders = ", ".join([p] * len(BOT_LIVE_STATUSES))
+    try:
+        cursor.execute(
+            f"SELECT * FROM bot_sessions WHERE user_id = {p} AND status IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+            (user_id, *BOT_LIVE_STATUSES),
+        )
+        row = cursor.fetchone()
+        return _session_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_latest_bot_session(user_id):
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    try:
+        cursor.execute(f"SELECT * FROM bot_sessions WHERE user_id = {p} ORDER BY id DESC LIMIT 1", (user_id,))
+        row = cursor.fetchone()
+        return _session_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_current_bot_session(user_id):
+    """The user's live session if there is one, otherwise the most recent — in one round trip."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    placeholders = ", ".join([p] * len(BOT_LIVE_STATUSES))
+    try:
+        cursor.execute(
+            f"SELECT * FROM bot_sessions WHERE user_id = {p} "
+            f"ORDER BY CASE WHEN status IN ({placeholders}) THEN 0 ELSE 1 END, id DESC LIMIT 1",
+            (user_id, *BOT_LIVE_STATUSES),
+        )
+        row = cursor.fetchone()
+        return _session_from_row(row) if row else None
+    finally:
+        conn.close()
+
+
+def list_bot_sessions_by_status(statuses) -> list:
+    """Sessions (all users) currently in one of the given states — the runtime's work list."""
+    statuses = tuple(statuses)
+    if not statuses:
+        return []
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    placeholders = ", ".join([p] * len(statuses))
+    try:
+        cursor.execute(f"SELECT * FROM bot_sessions WHERE status IN ({placeholders}) ORDER BY id ASC", statuses)
+        return [_session_from_row(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def transition_bot_session(session_id, new_status, from_statuses, user_id=None, stop_reason=None,
+                           last_error=None, mark_stopped=False) -> bool:
+    """
+    Compare-and-set a session's status.
+
+    The UPDATE only applies while the current status is one of from_statuses,
+    so a worker that is still mid-scan cannot overwrite a STOPPING set by the
+    user, and a stop cannot resurrect a session that already hit its target.
+    Returns True when the transition was applied.
+    """
+    from_statuses = tuple(from_statuses)
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    now_iso = datetime.now().isoformat()
+    sets = [f"status = {p}", f"updated_at = {p}"]
+    params = [new_status, now_iso]
+    if stop_reason is not None:
+        sets.append(f"stop_reason = {p}")
+        params.append(str(stop_reason)[:255])
+    if last_error is not None:
+        sets.append(f"last_error = {p}")
+        params.append(str(last_error)[:2000])
+    if mark_stopped:
+        sets.append(f"stopped_at = {p}")
+        params.append(now_iso)
+    where = f"id = {p} AND status IN ({', '.join([p] * len(from_statuses))})"
+    params.extend([session_id, *from_statuses])
+    if user_id is not None:
+        where += f" AND user_id = {p}"
+        params.append(user_id)
+    try:
+        cursor.execute(f"UPDATE bot_sessions SET {', '.join(sets)} WHERE {where}", tuple(params))
+        changed = cursor.rowcount == 1
+        conn.commit()
+        return changed
+    finally:
+        conn.close()
+
+
+def mark_bot_session_scanned(session_id):
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    now_iso = datetime.now().isoformat()
+    try:
+        cursor.execute(
+            f"UPDATE bot_sessions SET scan_count = scan_count + 1, last_scan_at = {p}, updated_at = {p} WHERE id = {p}",
+            (now_iso, now_iso, session_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_bot_session_aggregates(session_id) -> dict:
+    """Realized P&L, trade counts and committed margin for one session."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    try:
+        cursor.execute(f"SELECT {_BOT_AGGREGATE_COLUMNS} FROM trades WHERE bot_session_id = {p}", (session_id,))
+        return _normalize_bot_aggregates(cursor.fetchone())
+    finally:
+        conn.close()
+
+
+def list_bot_sessions_with_metrics(user_id, limit=20, offset=0) -> dict:
+    """Session history for one user, newest first, with metrics derived from its trades."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    try:
+        cursor.execute(f"SELECT COUNT(*) AS total FROM bot_sessions WHERE user_id = {p}", (user_id,))
+        total = int(dict(cursor.fetchone())["total"])
+        cursor.execute(f"""
+        SELECT s.*, a.realized_pnl, a.total_trades, a.winning_trades, a.losing_trades, a.open_trades, a.used_capital
+        FROM bot_sessions s
+        LEFT JOIN (
+            SELECT bot_session_id, {_BOT_AGGREGATE_COLUMNS}
+            FROM trades WHERE bot_session_id IS NOT NULL GROUP BY bot_session_id
+        ) a ON a.bot_session_id = s.id
+        WHERE s.user_id = {p}
+        ORDER BY s.id DESC
+        LIMIT {int(limit)} OFFSET {int(offset)}
+        """, (user_id,))
+        sessions = []
+        for r in cursor.fetchall():
+            s = _session_from_row(r)
+            s.update(_normalize_bot_aggregates(r))
+            sessions.append(s)
+        return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+    finally:
+        conn.close()
+
+
+def get_bot_session_trades(session_id, status=None, limit=200) -> list:
+    """Trades opened by one session. status: 'open', 'closed' or None for all."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    query = f"SELECT * FROM trades WHERE bot_session_id = {p}"
+    if status == "open":
+        query += " AND status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0)"
+    elif status == "closed":
+        query += " AND status = 'closed'"
+    query += f" ORDER BY id DESC LIMIT {int(limit)}"
+    try:
+        cursor.execute(query, (session_id,))
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_open_bot_trades() -> list:
+    """Every open trade opened by any bot session (all users) — for protective SL/target monitoring."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    try:
+        cursor.execute("""
+        SELECT * FROM trades
+        WHERE bot_session_id IS NOT NULL AND status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0)
+        ORDER BY id ASC
+        """)
+        return [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def _bot_entry_refusal(cursor, session_id, user_id, asset, margin):
+    """
+    Auto-Trade Bot guard, evaluated inside the trade-opening transaction.
+    Locks the session row so concurrent entries for one session serialize.
+    Returns a refusal reason, or None when the entry may proceed.
+    """
+    p = get_placeholder()
+    cursor.execute(f"SELECT * FROM bot_sessions WHERE id = {p}{_for_update()}", (session_id,))
+    row = cursor.fetchone()
+    if not row:
+        return "Bot session not found."
+    session = dict(row)
+    if int(session["user_id"]) != int(user_id):
+        return "Bot session does not belong to this account."
+    if session["status"] not in BOT_ENTRY_STATUSES:
+        return f"Bot session is {session['status']}; it no longer opens new trades."
+
+    cursor.execute(f"SELECT {_BOT_AGGREGATE_COLUMNS} FROM trades WHERE bot_session_id = {p}", (session_id,))
+    agg = _normalize_bot_aggregates(cursor.fetchone())
+    if agg["realized_pnl"] >= float(session["target_profit"]):
+        return "Session target profit has already been reached."
+    if agg["realized_pnl"] <= -float(session["max_loss"]):
+        return "Session maximum loss has already been reached."
+
+    cursor.execute(f"""
+    SELECT COUNT(*) AS n FROM trades
+    WHERE bot_session_id = {p} AND asset = {p} AND status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0)
+    """, (session_id, asset))
+    if int(dict(cursor.fetchone())["n"]) > 0:
+        return f"Session already holds an open {asset} position."
+
+    remaining = float(session["allocated_capital"]) - agg["used_capital"]
+    if margin > remaining + 1e-9:
+        return f"Margin {margin:.2f} exceeds remaining bot capital {max(0.0, remaining):.2f}."
+    return None
 
 def mark_user_verified(user_id):
     """Mark a user as email-verified."""
@@ -658,11 +1108,15 @@ def create_pending_trade(user_id, asset, trade_type, quantity, entry_price, sl, 
     conn.close()
     return trade_id
 
-def open_active_trade_atomic(user_id: int, asset: str, trade_type: str, quantity: float, price: float, leverage: float = 1.0, sl: float = 0.0, target: float = 0.0, market: Optional[str] = None):
+def open_active_trade_atomic(user_id: int, asset: str, trade_type: str, quantity: float, price: float, leverage: float = 1.0, sl: float = 0.0, target: float = 0.0, market: Optional[str] = None, source: str = "manual", bot_session_id: Optional[int] = None):
     """
     Atomic single-transaction trade opener fulfilling Part 12 & Part 25.
     Executes balance validation, margin reservation, active trade insertion,
     and audit log creation in a single ACID transaction on the permanent database.
+
+    With bot_session_id the Auto-Trade Bot guard (_bot_entry_refusal) runs in
+    the same transaction, so a stop, a reached target/loss limit or an
+    exhausted allocation that lands while the order is in flight still blocks it.
     """
     conn = get_connection()
     cursor = get_cursor(conn)
@@ -672,11 +1126,19 @@ def open_active_trade_atomic(user_id: int, asset: str, trade_type: str, quantity
     lev = float(leverage) if leverage and float(leverage) > 0 else 1.0
     cost = (float(quantity) * float(price)) / lev
     mkt = market or ("Crypto" if "-" in str(asset) else "Stock")
+    src = "bot" if bot_session_id is not None else (source or "manual")
     now_iso = datetime.now().isoformat()
 
     try:
-        # 1. Validate balance
-        cursor.execute(f"SELECT balance FROM {u} WHERE id = {p}", (user_id,))
+        _begin_write(cursor)
+        if bot_session_id is not None:
+            refusal = _bot_entry_refusal(cursor, bot_session_id, user_id, asset, cost)
+            if refusal:
+                conn.rollback()
+                return None, refusal
+
+        # 1. Validate balance (row-locked so concurrent opens cannot both spend it)
+        cursor.execute(f"SELECT balance FROM {u} WHERE id = {p}{_for_update()}", (user_id,))
         row = cursor.fetchone()
         balance = float(row["balance"]) if row else 0.0
         if cost > balance:
@@ -688,18 +1150,16 @@ def open_active_trade_atomic(user_id: int, asset: str, trade_type: str, quantity
         cursor.execute(f"UPDATE {u} SET balance = {p} WHERE id = {p}", (new_balance, user_id))
 
         # 3. Insert active trade
+        insert_sql = f"""
+            INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp, source, bot_session_id)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'active', 0.0, {p}, {p}, {p})
+            """
+        values = (user_id, asset, trade_type, quantity, quantity, quantity, lev, cost, mkt, price, price, sl, target, now_iso, src, bot_session_id)
         if IS_POSTGRES:
-            cursor.execute(f"""
-            INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'active', 0.0, {p})
-            RETURNING id
-            """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, cost, mkt, price, price, sl, target, now_iso))
+            cursor.execute(insert_sql + " RETURNING id", values)
             trade_id = cursor.fetchone()["id"]
         else:
-            cursor.execute(f"""
-            INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'active', 0.0, {p})
-            """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, cost, mkt, price, price, sl, target, now_iso))
+            cursor.execute(insert_sql, values)
             trade_id = cursor.lastrowid
 
         # 4. Insert audit log execution
@@ -812,7 +1272,9 @@ def get_closed_trade_history_paginated(
     side: Optional[str] = None,
     outcome: Optional[str] = None,
     limit: int = 20,
-    offset: int = 0
+    offset: int = 0,
+    source: Optional[str] = None,
+    bot_session_id: Optional[int] = None
 ) -> dict:
     """Retrieve paginated completed closed trades with filters."""
     conn = get_connection()
@@ -825,6 +1287,16 @@ def get_closed_trade_history_paginated(
     if user_id is not None:
         where_clauses.append(f"user_id = {p}")
         params.append(user_id)
+
+    if source:
+        if source.strip().lower() == "bot":
+            where_clauses.append("source = 'bot'")
+        elif source.strip().lower() == "manual":
+            where_clauses.append("(source IS NULL OR source = 'manual')")
+
+    if bot_session_id is not None:
+        where_clauses.append(f"bot_session_id = {p}")
+        params.append(bot_session_id)
 
     if symbol:
         where_clauses.append(f"UPPER(asset) = {p}")
@@ -1019,7 +1491,10 @@ def close_trade(trade_id, exit_price, outcome):
     p = get_placeholder()
     u = get_user_table()
     
-    cursor.execute(f"SELECT * FROM trades WHERE id = {p}", (trade_id,))
+    # Lock the row: without it a manual close racing an SL/target exit could
+    # both pass the status check and refund the margin twice.
+    _begin_write(cursor)
+    cursor.execute(f"SELECT * FROM trades WHERE id = {p}{_for_update()}", (trade_id,))
     trade = cursor.fetchone()
     if not trade or trade["status"] not in ("active", "pending"):
         conn.close()
@@ -1087,7 +1562,8 @@ def partially_close_position(trade_id: int, user_id: int, close_qty: float, exit
     p = get_placeholder()
     u = get_user_table()
 
-    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}", (trade_id, user_id))
+    _begin_write(cursor)
+    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}{_for_update()}", (trade_id, user_id))
     trade = cursor.fetchone()
     if not trade:
         conn.close()
@@ -1173,7 +1649,8 @@ def fully_close_position(trade_id: int, user_id: int, exit_price: float, outcome
     p = get_placeholder()
     u = get_user_table()
 
-    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}", (trade_id, user_id))
+    _begin_write(cursor)
+    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}{_for_update()}", (trade_id, user_id))
     trade = cursor.fetchone()
     if not trade:
         conn.close()
