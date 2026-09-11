@@ -7,6 +7,10 @@
     "dev": "concurrently -n \"BACKEND,AI\" -c \"cyan,magenta\" \"npm run dev:backend\" \"npm run dev:ai\"",
     "dev:backend": "cd backend && go run .",
     "dev:ai": "cd ai-service && python -m uvicorn main:app --reload --port 8001",
+    "build": "esbuild src/index.ts --bundle --outfile=frontend/app.bundle.js --format=iife --target=es2022 --sourcemap",
+    "watch": "esbuild src/index.ts --bundle --outfile=frontend/app.bundle.js --format=iife --target=es2022 --sourcemap --watch",
+    "typecheck": "tsc --noEmit",
+    "start:all": "run_all.bat",
     "build:backend": "cd backend && go build -o bin/backend.exe .",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -19,6 +23,9 @@
     "three": "^0.185.0"
   },
   "devDependencies": {
-    "concurrently": "^10.0.5"
+    "@types/node": "^22.20.2",
+    "concurrently": "^10.0.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
   }
 }
