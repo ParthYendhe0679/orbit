@@ -33,6 +33,8 @@ except ImportError:
     pass
 
 # Load .env before anything reads os.environ (news/LLM keys, DATABASE_URL).
+load_dotenv(os.path.join(_parent_dir, ".env"))
+load_dotenv(os.path.join(_current_dir, ".env"))
 load_dotenv()
 
 try:

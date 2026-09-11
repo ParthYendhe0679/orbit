@@ -78,7 +78,8 @@ class ValkeyManager:
                     max_connections=20,
                 )
 
-            self._valkey_client = client_mod.Valkey(connection_pool=self._pool)
+            client_cls = getattr(client_mod, "Valkey", getattr(client_mod, "Redis", None))
+            self._valkey_client = client_cls(connection_pool=self._pool)
             self._valkey_client.ping()
             self.is_connected = True
             logger.info("[Valkey] Connected successfully to Aiven Valkey cluster.")
