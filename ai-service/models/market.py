@@ -1,5 +1,5 @@
 """
-backend/models/market.py — Standardized Market Data Contracts for ORBIT.
+ai-service/models/market.py — Standardized Market Data Contracts for ORBIT.
 
 Provides uniform, validated data contracts for quotes, historical candles,
 and market data snapshots used by the entire ORBIT multi-agent ecosystem.

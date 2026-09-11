@@ -180,24 +180,12 @@ def _fetch_yahoo_rss(symbol: str, log_func=None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Source 3: Offline simulated fallback (always works)
-# ---------------------------------------------------------------------------
-def _simulated_headlines(symbol: str) -> list:
-    base = symbol.replace("-USD", "").replace(".NS", "").replace(".BO", "")
-    return [
-        {"title": f"{base} market digests recent price action amid broad volatility", "link": "#", "source": "Simulated", "published": ""},
-        {"title": f"Analysts weigh in on {base} outlook as macro conditions shift",   "link": "#", "source": "Simulated", "published": ""},
-        {"title": f"Institutional interest in {base} sees steady momentum",            "link": "#", "source": "Simulated", "published": ""},
-    ]
-
-
-# ---------------------------------------------------------------------------
 # Public function: get_headlines
 # ---------------------------------------------------------------------------
 def get_headlines(symbol: str, log_func=None) -> list:
     """
     Fetch real news headlines for a given trading symbol.
-    Priority: In-memory Cache → NewsAPI.org → Yahoo Finance RSS → Simulated fallback
+    Priority: In-memory Cache → NewsAPI.org → Yahoo Finance RSS. No invented fallback.
     """
     upper_sym = symbol.upper().strip()
     now = time.time()
@@ -214,10 +202,11 @@ def get_headlines(symbol: str, log_func=None) -> list:
         headlines = _fetch_yahoo_rss(symbol, log_func)
 
     if not headlines:
-        # Offline fallback
+        # No live source answered: report it honestly (an empty list scores as
+        # neutral) instead of inventing headlines, and do not cache the miss.
         if log_func:
-            log_func("News Analyst", "⚠️ All live sources failed. Using simulated headlines.")
-        headlines = _simulated_headlines(symbol)
+            log_func("News Analyst", "⚠️ No live news source answered; no headlines available.")
+        return []
 
     _SYMBOL_HEADLINES_CACHE[upper_sym] = {"headlines": headlines, "timestamp": now}
     return headlines

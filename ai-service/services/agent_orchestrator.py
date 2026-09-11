@@ -1,5 +1,5 @@
 """
-backend/services/agent_orchestrator.py — ORBIT AI Agent Intelligence System (Phase 3).
+ai-service/services/agent_orchestrator.py — ORBIT AI Agent Intelligence System (Phase 3).
 
 Central orchestrator coordinating specialized quantitative and intelligence agents.
 Consumes normalized, validated data exclusively from Phase 2's MarketDataService.
@@ -17,24 +17,24 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backend.models.agent import (
+from models.agent import (
     AgentCategory,
     AgentOrchestrationResult,
     AgentResult,
     AgentSignal,
     AgentStatus,
 )
-from backend.services.market_data_service import MarketDataService, market_service
+from services.market_data_service import MarketDataService, market_service
 
 # Reusing existing quantitative implementations directly
-import backend.agents.chart_analyst as chart_analyst
-import backend.agents.indicator_analyst as indicator_analyst
-import backend.agents.momentum_candle_analyst as momentum_candle_analyst
-import backend.agents.ema_ribbon_analyst as ema_ribbon_analyst
-import backend.agents.volatility_analyst as volatility_analyst
-import backend.agents.volume_flow_analyst as volume_flow_analyst
-import backend.agents.mtf_trend_analyst as mtf_trend_analyst
-import backend.agents.news_analyst as news_analyst
+import agents.chart_analyst as chart_analyst
+import agents.indicator_analyst as indicator_analyst
+import agents.momentum_candle_analyst as momentum_candle_analyst
+import agents.ema_ribbon_analyst as ema_ribbon_analyst
+import agents.volatility_analyst as volatility_analyst
+import agents.volume_flow_analyst as volume_flow_analyst
+import agents.mtf_trend_analyst as mtf_trend_analyst
+import agents.news_analyst as news_analyst
 
 logger = logging.getLogger("orbit.agent_system")
 

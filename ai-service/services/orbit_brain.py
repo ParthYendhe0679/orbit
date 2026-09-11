@@ -1,5 +1,5 @@
 """
-backend/services/orbit_brain.py — ORBIT Brain Central Intelligence Orchestrator (Phase 6).
+ai-service/services/orbit_brain.py — ORBIT Brain Central Intelligence Orchestrator (Phase 6).
 
 Coordinates the multi-system intelligence pipeline across:
   - Phase 2: Market Data System (MarketDataService)
@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backend.models.brain import (
+from models.brain import (
     AgentIntelligenceSummary,
     BrainAnalysisContext,
     BrainDiagnostics,
@@ -33,18 +33,18 @@ from backend.models.brain import (
     MarketSummary,
     StrategySummary,
 )
-from backend.models.agent import AgentOrchestrationResult, AgentStatus
-from backend.models.strategy import StrategyOrchestrationResult, StrategyStatus
-from backend.models.consensus import (
+from models.agent import AgentOrchestrationResult, AgentStatus
+from models.strategy import StrategyOrchestrationResult, StrategyStatus
+from models.consensus import (
     AgreementLevel,
     ConsensusResult,
     ConsensusSignal,
     ConsensusStatus,
 )
-from backend.services.agent_orchestrator import AgentOrchestrator, agent_orchestrator
-from backend.services.consensus_engine import ConsensusEngine, consensus_engine
-from backend.services.market_data_service import MarketDataService, market_service
-from backend.services.strategy_engine import StrategyEngine, strategy_engine
+from services.agent_orchestrator import AgentOrchestrator, agent_orchestrator
+from services.consensus_engine import ConsensusEngine, consensus_engine
+from services.market_data_service import MarketDataService, market_service
+from services.strategy_engine import StrategyEngine, strategy_engine
 
 logger = logging.getLogger("orbit.brain")
 

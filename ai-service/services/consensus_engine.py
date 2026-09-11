@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from backend.models.agent import AgentOrchestrationResult, AgentResult, AgentStatus
-from backend.models.consensus import (
+from models.agent import AgentOrchestrationResult, AgentResult, AgentStatus
+from models.consensus import (
     AgreementLevel,
     ConsensusResult,
     ConsensusSignal,
@@ -20,10 +20,10 @@ from backend.models.consensus import (
     EvidenceItem,
     EvidenceType,
 )
-from backend.models.strategy import StrategyOrchestrationResult, StrategyResult, StrategyStatus
-from backend.services.agent_orchestrator import agent_orchestrator
-from backend.services.strategy_engine import strategy_engine
-from backend.services.market_data_service import market_service
+from models.strategy import StrategyOrchestrationResult, StrategyResult, StrategyStatus
+from services.agent_orchestrator import agent_orchestrator
+from services.strategy_engine import strategy_engine
+from services.market_data_service import market_service
 
 
 # ---------------------------------------------------------------------------

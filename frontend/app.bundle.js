@@ -1,7 +1,8 @@
 "use strict";
 (() => {
   // src/websocket/socketManager.ts
-  var SocketManager = class {
+  var SOCKET_FAILED_EVENT = "orbit:socket-failed";
+  var SocketManager = class _SocketManager {
     primarySocket = null;
     streamSocket = null;
     primaryReconnectTimer = null;
@@ -10,8 +11,6 @@
     reconnectAttempts = 0;
     maxReconnectAttempts = 30;
     listeners = /* @__PURE__ */ new Map();
-    currentUserId = null;
-    currentUsername = null;
     constructor() {
       this.listeners.set("all", /* @__PURE__ */ new Set());
     }
@@ -45,12 +44,18 @@
         });
       }
     }
-    connect(userId, username) {
-      this.currentUserId = userId;
-      this.currentUsername = username;
+    url(path) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      return `${protocol}//${window.location.host}${path}`;
+    }
+    static live(socket) {
+      return !!socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
+    }
+    /** Opens both sockets (idempotent: an open or connecting socket is kept). */
+    connect() {
       this.intentionallyClosed = false;
-      this.connectPrimary();
-      this.connectStreamHub();
+      if (!_SocketManager.live(this.primarySocket)) this.connectPrimary();
+      if (!_SocketManager.live(this.streamSocket)) this.connectStreamHub();
     }
     disconnect() {
       this.intentionallyClosed = true;
@@ -96,39 +101,39 @@
       return this.send(action);
     }
     connectPrimary() {
-      if (!this.currentUserId) return;
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.hostname || "127.0.0.1";
-      const wsUrl = `${protocol}//${host}:8000/ws?user_id=${encodeURIComponent(this.currentUserId)}&username=${encodeURIComponent(this.currentUsername || "Trader")}`;
+      let socket;
+      let opened = false;
       try {
-        this.primarySocket = new WebSocket(wsUrl);
+        socket = new WebSocket(this.url("/ws"));
       } catch (err) {
         console.warn("[WS connect error]:", err);
         this.schedulePrimaryReconnect();
         return;
       }
-      this.primarySocket.onopen = () => {
-        console.log("[WS] Connected to primary ORBIT engine");
+      this.primarySocket = socket;
+      socket.onopen = () => {
+        opened = true;
         this.reconnectAttempts = 0;
       };
-      this.primarySocket.onmessage = (event) => {
+      socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
           if (!data || !data.type) return;
-          if ((data.type === "tick" || data.type === "price_update") && this.isStreamHubOpen()) {
-            return;
+          if (data.type === "auth_error") {
+            this.intentionallyClosed = true;
           }
           this.emit(data.type, data);
         } catch (parseErr) {
           console.warn("[WS message parse error]:", parseErr);
         }
       };
-      this.primarySocket.onclose = () => {
+      socket.onclose = () => {
+        if (this.primarySocket === socket) this.primarySocket = null;
         if (this.intentionallyClosed) return;
+        if (!opened) window.dispatchEvent(new CustomEvent(SOCKET_FAILED_EVENT));
         this.schedulePrimaryReconnect();
       };
-      this.primarySocket.onerror = (err) => {
-        console.warn("[WS primary error]:", err);
+      socket.onerror = () => {
       };
     }
     schedulePrimaryReconnect() {
@@ -140,40 +145,30 @@
       const delay = Math.min(1e3 * Math.pow(1.5, this.reconnectAttempts), 1e4);
       this.reconnectAttempts++;
       if (this.primaryReconnectTimer) clearTimeout(this.primaryReconnectTimer);
-      this.primaryReconnectTimer = window.setTimeout(() => {
-        this.connectPrimary();
-      }, delay);
+      this.primaryReconnectTimer = window.setTimeout(() => this.connectPrimary(), delay);
     }
     connectStreamHub() {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.hostname || "127.0.0.1";
-      const hubUrl = `${protocol}//${host}:8001/ws`;
+      let socket;
       try {
-        this.streamSocket = new WebSocket(hubUrl);
+        socket = new WebSocket(this.url("/ws/stream"));
       } catch {
         return;
       }
-      this.streamSocket.onopen = () => {
-        console.log("[orbit-stream] Go hub connected \u2014 high-frequency tick stream active");
-      };
-      this.streamSocket.onmessage = (event) => {
+      this.streamSocket = socket;
+      socket.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (!data || !data.type) return;
-          if (data.type === "tick" || data.type === "metrics") {
-            this.emit(data.type, data);
-          }
+          if (data && data.type === "tick") this.emit("tick", data);
         } catch {
         }
       };
-      this.streamSocket.onclose = () => {
+      socket.onclose = () => {
+        if (this.streamSocket === socket) this.streamSocket = null;
         if (this.intentionallyClosed) return;
         if (this.streamReconnectTimer) clearTimeout(this.streamReconnectTimer);
-        this.streamReconnectTimer = window.setTimeout(() => {
-          this.connectStreamHub();
-        }, 3e3);
+        this.streamReconnectTimer = window.setTimeout(() => this.connectStreamHub(), 3e3);
       };
-      this.streamSocket.onerror = () => {
+      socket.onerror = () => {
       };
     }
     isPrimaryOpen() {
@@ -192,21 +187,12 @@
     sockets;
     constructor() {
       this.sockets = socketManager;
-      let savedUserId = null;
-      let savedUsername = null;
-      try {
-        if (typeof localStorage !== "undefined") {
-          savedUserId = localStorage.getItem("orbit_user_id");
-          savedUsername = localStorage.getItem("orbit_username");
-        }
-      } catch {
-      }
       this.state = {
         currentAsset: "BTC-USD",
         currentTimeframe: "1d",
-        currentUsername: savedUsername || "Trader Account",
-        currentUserId: savedUserId ? isNaN(Number(savedUserId)) ? savedUserId : Number(savedUserId) : null,
-        walletBalance: 1e5,
+        currentUsername: "",
+        currentUserId: null,
+        walletBalance: null,
         openTrades: [],
         pendingOrders: [],
         tradeHistory: [],
@@ -216,7 +202,8 @@
         closeSelectedPct: 50,
         showSRLevels: false,
         botRunning: false,
-        dashboardSummary: null
+        dashboardSummary: null,
+        pendingSignal: null
       };
     }
     get(key) {
@@ -226,25 +213,8 @@
       return this.state;
     }
     set(key, value) {
-      const prev = this.state[key];
-      if (prev === value) return;
+      if (this.state[key] === value) return;
       this.state[key] = value;
-      if (key === "currentUserId") {
-        try {
-          if (value !== null && typeof localStorage !== "undefined") {
-            localStorage.setItem("orbit_user_id", String(value));
-          }
-        } catch {
-        }
-      }
-      if (key === "currentUsername") {
-        try {
-          if (value && typeof localStorage !== "undefined") {
-            localStorage.setItem("orbit_username", String(value));
-          }
-        } catch {
-        }
-      }
       const keyListeners = this.listeners.get(key);
       if (keyListeners) {
         keyListeners.forEach((listener) => {
@@ -281,6 +251,10 @@
       maximumFractionDigits: 2
     }).format(number);
   }
+  function formatINRSafe(value) {
+    const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+    return Number.isFinite(n) ? formatINR(n) : "\u2014";
+  }
   function formatCopilotMarkdown(raw) {
     if (!raw) return "";
     let formatted = esc(raw);
@@ -296,8 +270,8 @@
   }
 
   // src/utils/dom.ts
-  function safeText(el, val) {
-    if (el) el.textContent = String(val);
+  function safeText(el2, val) {
+    if (el2) el2.textContent = String(val);
   }
   function getElement(id) {
     return document.getElementById(id);
@@ -316,24 +290,45 @@
     message;
     data;
   };
+  var tokenProvider = null;
+  function setAuthTokenProvider(provider) {
+    tokenProvider = provider;
+  }
+  var UNAUTHORIZED_EVENT = "orbit:unauthorized";
+  async function authHeaders(base) {
+    const headers = new Headers(base || {});
+    if (tokenProvider && !headers.has("Authorization")) {
+      try {
+        const token = await tokenProvider();
+        if (token) headers.set("Authorization", `Bearer ${token}`);
+      } catch {
+      }
+    }
+    return headers;
+  }
+  async function authFetch(input, init = {}) {
+    const headers = await authHeaders(init.headers);
+    const response = await fetch(input, { ...init, headers, credentials: "same-origin" });
+    if (response.status === 401 && !input.startsWith("/api/login") && !input.startsWith("/api/register")) {
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT, { detail: { url: input } }));
+    }
+    return response;
+  }
   async function request(endpoint, options = {}) {
     const headers = new Headers(options.headers || {});
     if (options.body && typeof options.body === "string" && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const config = {
-      ...options,
-      headers
-    };
     try {
-      const response = await fetch(endpoint, config);
+      const response = await authFetch(endpoint, { ...options, headers });
       if (!response.ok) {
         let errorDetail = `Request failed with status ${response.status}`;
         let errorData = null;
         try {
           errorData = await response.json();
           if (errorData && typeof errorData === "object" && "detail" in errorData) {
-            errorDetail = String(errorData.detail);
+            const detail = errorData.detail;
+            errorDetail = typeof detail === "string" ? detail : JSON.stringify(detail);
           }
         } catch {
         }
@@ -357,9 +352,17 @@
     }),
     delete: (url, headers) => request(url, { method: "DELETE", headers })
   };
+  function unwrapData(res) {
+    if (!res || res.ok === false || res.data === void 0 || res.data === null) {
+      const detail = res && typeof res.detail === "string" ? res.detail : "The service returned no data.";
+      throw new ApiError(502, detail, res);
+    }
+    return res.data;
+  }
 
   // src/services/authService.ts
   var authService = {
+    /** Provisions/links the ORBIT account for the verified Clerk user; the gateway then issues its session cookie. */
     async syncClerkUser(req) {
       return apiClient.post("/api/auth/sync", req);
     },
@@ -371,6 +374,17 @@
     },
     async register(credentials) {
       return apiClient.post("/api/register", credentials);
+    },
+    /** The account the gateway verified for this browser, or an ApiError(401). */
+    async me() {
+      return apiClient.get("/api/auth/me");
+    },
+    /** Ends the gateway session (clears the HttpOnly cookie). */
+    async logout() {
+      try {
+        await apiClient.post("/api/auth/logout");
+      } catch {
+      }
     }
   };
 
@@ -383,10 +397,10 @@
     return window.location.origin + window.location.pathname + (hash || "");
   }
   function showAuthError(message) {
-    const el = document.getElementById("login-error") || document.getElementById("signup-error");
-    if (el) {
-      el.textContent = message;
-      el.classList.remove("hidden");
+    const el2 = document.getElementById("login-error") || document.getElementById("signup-error");
+    if (el2) {
+      el2.textContent = message;
+      el2.classList.remove("hidden");
     }
     const loginSection = document.getElementById("login-section");
     if (loginSection) loginSection.scrollIntoView({ behavior: "smooth" });
@@ -477,6 +491,9 @@
           }
           isClerkActive = true;
           console.log("[Orbit Auth] Clerk Headless SDK loaded with custom UI.");
+          setAuthTokenProvider(
+            async () => clerkInstance && clerkInstance.session ? clerkInstance.session.getToken() : null
+          );
           const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
           const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1e3;
           const returningFromOAuth = (oauthFresh || window.location.hash.includes("sso-callback")) && clerkHasOAuthAttempt(clerkInstance.client);
@@ -582,8 +599,7 @@
     try {
       const data = await authService.syncClerkUser({
         email: userEmail,
-        username: displayName,
-        clerk_id: u.id
+        username: displayName
       });
       if (data && data.ok && data.user_id) {
         console.log(`[Orbit Auth] Clerk user ${displayName} (${userEmail}) stored in DB user #${data.user_id}`);
@@ -606,8 +622,6 @@
     store.set("currentUsername", finalUsername);
     store.set("currentUserId", finalUserId);
     safeText(getElement("dashboard-user"), finalUsername);
-    localStorage.setItem("orbit_logged_in_username", finalUsername);
-    if (finalUserId) localStorage.setItem("orbit_user_id", String(finalUserId));
     window.location.hash = "#dashboard";
     document.body.classList.add("in-dashboard");
     if (window.aether3D && typeof window.aether3D.stop === "function") {
@@ -629,7 +643,7 @@
     }
     window.scrollTo(0, 0);
     setTimeout(() => {
-      store.sockets.connect(finalUserId || 1, finalUsername);
+      store.sockets.connect();
       if (typeof window.switchToTab === "function") {
         window.switchToTab("dashboard");
       }
@@ -641,8 +655,52 @@
       }
     }, 50);
   }
-  function launchDemoDirect() {
-    enterDashboard("Demo Trader", 1);
+  async function launchDemoDirect() {
+    if (await restoreSession()) return;
+    scrollToLogin();
+    showAuthError("Sign in or create an account to open the live trading terminal.");
+  }
+  async function restoreSession() {
+    try {
+      const me = await authService.me();
+      if (me && me.ok && me.user_id) {
+        enterDashboard(me.username, me.user_id);
+        return me;
+      }
+    } catch {
+    }
+    if (window.location.hash.includes("dashboard")) {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    return null;
+  }
+  var _sessionRecovery = null;
+  async function handleUnauthorized() {
+    if (!document.body.classList.contains("in-dashboard")) return;
+    if (!_sessionRecovery) {
+      _sessionRecovery = (async () => {
+        const user = clerkInstance && clerkInstance.session ? clerkInstance.user : null;
+        if (!user) return false;
+        try {
+          const email = user.primaryEmailAddress && user.primaryEmailAddress.emailAddress || "";
+          const data = await authService.syncClerkUser({ email, username: user.username || user.fullName || "" });
+          return !!(data && data.ok);
+        } catch {
+          return false;
+        }
+      })();
+      _sessionRecovery.finally(() => {
+        window.setTimeout(() => {
+          _sessionRecovery = null;
+        }, 5e3);
+      });
+    }
+    if (await _sessionRecovery) {
+      store.sockets.connect();
+      return;
+    }
+    await logout();
+    showAuthError("Your session has ended. Please sign in again.");
   }
   function scrollToLogin() {
     const landingPage = getElement("landing-page");
@@ -738,20 +796,7 @@
           return;
         }
       }
-      console.log("[Orbit Auth] Fast-path Google authentication to database...");
-      clearTimeout(resetTimer);
-      const syncData = await authService.syncClerkUser({
-        email: "google.trader@orbitai.trade",
-        username: "Google Trader",
-        clerk_id: "google_oauth_" + Date.now().toString(36)
-      });
-      if (syncData && syncData.ok && syncData.user_id) {
-        sessionStorage.removeItem("orbit_oauth_in_progress");
-        enterDashboard(syncData.username || "Google Trader", syncData.user_id);
-        return;
-      } else {
-        throw new Error("Database account creation failed");
-      }
+      throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded.");
     } catch (err) {
       clearTimeout(resetTimer);
       console.error("Google auth error:", err);
@@ -859,8 +904,14 @@
     }
   }
   async function logout() {
+    await authService.logout();
+    store.sockets.disconnect();
+    store.set("currentUserId", null);
+    store.set("dashboardSummary", null);
+    store.set("walletBalance", null);
     localStorage.removeItem("orbit_logged_in_username");
     localStorage.removeItem("orbit_user_id");
+    localStorage.removeItem("orbit_username");
     if (isClerkActive && clerkInstance) {
       try {
         await clerkInstance.signOut();
@@ -1100,19 +1151,25 @@
   function confirmTrade() {
     const modal = getElement("trade-confirm-modal");
     if (modal) modal.classList.add("hidden");
+    const signal = store.get("pendingSignal");
     store.sockets.sendPrimaryAction({
-      action: "confirm_trade"
+      action: "confirm_trade",
+      trade_id: signal && signal.trade_id !== null ? signal.trade_id : void 0
     });
+    store.set("pendingSignal", null);
     if (typeof window.logToTerminal === "function") {
-      window.logToTerminal("Execution Agent", "Trade confirmed by user. Dispatching order to exchange...");
+      window.logToTerminal("Execution Agent", "Trade confirmed by user. Filling the proposed order...");
     }
   }
   function rejectTrade() {
     const modal = getElement("trade-confirm-modal");
     if (modal) modal.classList.add("hidden");
+    const signal = store.get("pendingSignal");
     store.sockets.sendPrimaryAction({
-      action: "reject_trade"
+      action: "cancel_trade",
+      trade_id: signal && signal.trade_id !== null ? signal.trade_id : void 0
     });
+    store.set("pendingSignal", null);
     if (typeof window.logToTerminal === "function") {
       window.logToTerminal("Risk Guard", "Trade rejected by user. Safety constraints enforced.");
     }
@@ -1132,79 +1189,44 @@
     });
   }
 
-  // src/services/tradingService.ts
-  var tradingService = {
-    async getOpenPositions(userId) {
-      const res = await apiClient.get(
-        `/api/trades/open?user_id=${encodeURIComponent(userId)}`
+  // src/services/marketService.ts
+  async function getNews(url, signal) {
+    const res = await authFetch(url, { signal });
+    if (!res.ok) throw new Error(`News request failed with status ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data.headlines) ? data.headlines : [];
+  }
+  var marketService = {
+    getQuote(symbol) {
+      return apiClient.get(`/api/market/quote?symbol=${encodeURIComponent(symbol)}`);
+    },
+    async getHistory(symbol, period = "60d", interval = "1d") {
+      return unwrapData(
+        await apiClient.get(
+          `/api/market/history?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`
+        )
       );
-      if (Array.isArray(res)) return res;
-      return res.positions || res.trades || [];
     },
-    async getPendingOrders(userId) {
-      const res = await apiClient.get(
-        `/api/trades/pending?user_id=${encodeURIComponent(userId)}`
-      );
-      if (Array.isArray(res)) return res;
-      return res.orders || res.pending || [];
+    async searchSymbols(query, market) {
+      const params = new URLSearchParams({ q: query });
+      if (market) params.set("market", market);
+      const res = await apiClient.get(`/api/market/search?${params.toString()}`);
+      return Array.isArray(res.results) ? res.results : [];
     },
-    async getTradeHistory(query = {}) {
-      const params = new URLSearchParams();
-      if (query.user_id !== void 0) params.set("user_id", String(query.user_id));
-      if (query.asset) params.set("asset", query.asset);
-      if (query.limit !== void 0) params.set("limit", String(query.limit));
-      if (query.offset !== void 0) params.set("offset", String(query.offset));
-      const res = await apiClient.get(
-        `/api/trades/history?${params.toString()}`
-      );
-      if ("trades" in res && Array.isArray(res.trades)) {
-        return {
-          trades: res.trades,
-          total: res.total || res.trades.length,
-          page: Math.floor((query.offset || 0) / (query.limit || 10)),
-          limit: query.limit || 10
-        };
-      }
-      return { trades: [], total: 0, page: 0, limit: 10 };
+    getGlobalNews(signal) {
+      return getNews("/api/news/global", signal);
     },
-    async partialCloseTrade(tradeId, req) {
-      return apiClient.post(`/api/trades/${tradeId}/partial-close`, req);
-    },
-    async closePositionPartial(tradeId, quantity, userId) {
-      return apiClient.post(`/api/trades/${tradeId}/close`, {
-        quantity,
-        user_id: userId ? Number(userId) : void 0
-      });
-    },
-    async fullCloseTrade(tradeId, userId) {
-      return apiClient.post(`/api/trades/${tradeId}/close/full?user_id=${encodeURIComponent(userId)}`);
-    },
-    async closePositionFull(tradeId, userId) {
-      const query = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
-      return apiClient.post(`/api/trades/${tradeId}/close/full${query}`, {});
-    },
-    async cancelOrder(orderId, userId) {
-      return apiClient.post(`/api/orders/${orderId}/cancel`, {
-        user_id: userId,
-        order_id: orderId
-      });
-    }
-  };
-
-  // src/services/portfolioService.ts
-  var portfolioService = {
-    async getDashboardSummary(userId) {
-      return apiClient.get(`/api/dashboard/summary?user_id=${encodeURIComponent(userId)}`);
-    },
-    async getReport(userId) {
-      return apiClient.get(`/api/report?user_id=${encodeURIComponent(userId)}`);
+    getSymbolNews(symbol, signal) {
+      return getNews(`/api/news?symbol=${encodeURIComponent(symbol)}`, signal);
     }
   };
 
   // src/services/autoBotService.ts
   var autoBotService = {
     async getConfig(userId) {
-      return apiClient.get(`/api/bot-config?user_id=${encodeURIComponent(userId)}`);
+      const q = userId !== null && userId !== void 0 && userId !== "" ? `?user_id=${encodeURIComponent(userId)}` : "";
+      const res = await apiClient.get(`/api/bot-config${q}`);
+      return res.config;
     },
     async saveConfig(config) {
       const payload = {
@@ -1255,13 +1277,13 @@
   var _botPollTimer = null;
   var _botBusy = false;
   function botUserId() {
-    return store.get("currentUserId") || localStorage.getItem("orbit_user_id") || null;
+    return store.get("currentUserId") || null;
   }
   function botIsLive(session) {
     return !!(session && BOT_LIVE_STATES.includes(session.status));
   }
   async function botFetch(url, options) {
-    const res = await fetch(url, options);
+    const res = await authFetch(url, options);
     let data = {};
     try {
       data = await res.json();
@@ -1356,8 +1378,8 @@
     const allowed = new Set((preferred && preferred.assets || []).map((a) => a.symbol.toUpperCase()));
     _botSelectedAssets = new Set((cfg.assets_list || []).map((s) => String(s).toUpperCase()).filter((s) => allowed.has(s)));
     const setVal = (id, v) => {
-      const el = getElement(id);
-      if (el && v !== void 0 && v !== null) el.value = String(v);
+      const el2 = getElement(id);
+      if (el2 && v !== void 0 && v !== null) el2.value = String(v);
     };
     setVal("bot-capital", cfg.allocated_capital);
     setVal("bot-target", cfg.target_profit);
@@ -1407,8 +1429,8 @@
     safeText(getElement("bot-balance-hint"), ok ? `available ${formatINR(_botAvailableBalance)}` : "");
   }
   function setBotCapitalMax() {
-    const el = getElement("bot-capital");
-    if (el && _botAvailableBalance) el.value = String(Math.floor(Number(_botAvailableBalance) * 100) / 100);
+    const el2 = getElement("bot-capital");
+    if (el2 && _botAvailableBalance) el2.value = String(Math.floor(Number(_botAvailableBalance) * 100) / 100);
   }
   function readBotForm() {
     return {
@@ -1431,10 +1453,10 @@
     return null;
   }
   function showBotConfigError(message) {
-    const el = getElement("bot-config-error");
-    if (!el) return;
-    el.textContent = message || "";
-    el.classList.toggle("hidden", !message);
+    const el2 = getElement("bot-config-error");
+    if (!el2) return;
+    el2.textContent = message || "";
+    el2.classList.toggle("hidden", !message);
   }
   async function saveBotConfig() {
     const uid = botUserId();
@@ -1516,16 +1538,16 @@
     const lock = getElement("bot-config-lock");
     if (lock) lock.classList.toggle("hidden", !live);
     ["bot-market", "bot-capital", "bot-target", "bot-maxloss", "bot-leverage", "bot-save-btn", "bot-max-btn"].forEach((id) => {
-      const el = getElement(id);
-      if (el) el.disabled = live;
+      const el2 = getElement(id);
+      if (el2) el2.disabled = live;
     });
     document.querySelectorAll(".bot-asset-chip").forEach((b) => {
       b.disabled = live;
     });
   }
   function setBotBar(id, pct) {
-    const el = getElement(id);
-    if (el) el.style.width = `${Math.max(0, Math.min(100, Number(pct) || 0))}%`;
+    const el2 = getElement(id);
+    if (el2) el2.style.width = `${Math.max(0, Math.min(100, Number(pct) || 0))}%`;
   }
   function renderBotSession(session, schedulerOnline) {
     _botSession = session || null;
@@ -1845,6 +1867,493 @@
     if (maxBtn) maxBtn.addEventListener("click", setBotCapitalMax);
   }
 
+  // src/ui/newsController.ts
+  var scrollRAF = null;
+  var scrollPos = 0;
+  var scrollPaused = false;
+  var scrollEl = null;
+  var boundFeeds = /* @__PURE__ */ new WeakSet();
+  var cachedGlobal = null;
+  var symbolCache = {};
+  function stopNewsScroll() {
+    if (scrollRAF !== null) {
+      cancelAnimationFrame(scrollRAF);
+      scrollRAF = null;
+    }
+    scrollEl = null;
+  }
+  function autoScrollStep() {
+    if (scrollEl && !scrollPaused) {
+      scrollPos += 0.35;
+      const mid = scrollEl.scrollHeight / 2;
+      if (mid > 0 && scrollPos >= mid) scrollPos = 0;
+      scrollEl.scrollTop = scrollPos;
+    }
+    scrollRAF = requestAnimationFrame(autoScrollStep);
+  }
+  function sentimentBadge(sentiment) {
+    if (sentiment === "bullish") return "badge-green";
+    if (sentiment === "bearish") return "badge-red";
+    return "badge-yellow";
+  }
+  function renderGlobalNewsHeadlines(headlines) {
+    const feed = getElement("news-feed-container");
+    if (!feed) return;
+    stopNewsScroll();
+    scrollPos = 0;
+    feed.scrollTop = 0;
+    if (!headlines.length) {
+      feed.innerHTML = `<div class="news-loading">No global headlines available right now.</div>`;
+      return;
+    }
+    const cards = headlines.map((item) => {
+      const date = item.published ? ` \xB7 ${item.published}` : "";
+      const href = item.link && item.link !== "#" ? item.link : "";
+      return `
+            <a class="news-item-card" ${href ? `href="${esc(href)}" target="_blank" rel="noopener noreferrer"` : ""}>
+                <div class="news-item-main">
+                    <h3 class="news-item-title">${esc(item.title)}</h3>
+                    <div class="news-item-meta">
+                        <i class="fa-solid fa-newspaper"></i>
+                        <span>${esc(item.source || "")}${esc(date)}</span>
+                    </div>
+                </div>
+                <span class="badge ${sentimentBadge(item.sentiment)}">${esc((item.sentiment || "neutral").toUpperCase())}</span>
+            </a>`;
+    }).join("");
+    feed.innerHTML = headlines.length > 2 ? cards + cards : cards;
+    if (headlines.length > 2) {
+      if (!boundFeeds.has(feed)) {
+        boundFeeds.add(feed);
+        feed.addEventListener("mouseenter", () => {
+          scrollPaused = true;
+        }, { passive: true });
+        feed.addEventListener("mouseleave", () => {
+          scrollPaused = false;
+        }, { passive: true });
+        feed.addEventListener("scroll", () => {
+          if (scrollPaused && scrollEl) scrollPos = scrollEl.scrollTop;
+        }, { passive: true });
+      }
+      scrollEl = feed;
+      scrollPaused = false;
+      scrollRAF = requestAnimationFrame(autoScrollStep);
+    }
+  }
+  async function fetchGlobalNews() {
+    const feed = getElement("news-feed-container");
+    if (!feed) return;
+    if (cachedGlobal && cachedGlobal.length) {
+      renderGlobalNewsHeadlines(cachedGlobal);
+    } else {
+      stopNewsScroll();
+      feed.innerHTML = `<div class="news-loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading market news\u2026</div>`;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 8e3);
+    try {
+      const headlines = await marketService.getGlobalNews(controller.signal);
+      if (headlines.length) {
+        cachedGlobal = headlines;
+        renderGlobalNewsHeadlines(headlines);
+      } else if (!cachedGlobal) {
+        feed.innerHTML = `<div class="news-loading">No global headlines available right now.</div>`;
+      }
+    } catch (err) {
+      console.warn("[News] Global news unavailable:", err);
+      if (!cachedGlobal) feed.innerHTML = `<div class="news-loading">\u26A0\uFE0F Could not load world market news.</div>`;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+  function renderSymbolHeadlines(headlines, ticker, symbol) {
+    if (!headlines.length) {
+      ticker.innerHTML = `<span class="news-ticker-loading">No news found for ${esc(symbol)}.</span>`;
+      ticker.style.animation = "none";
+      return;
+    }
+    const rows = headlines.map((item) => {
+      const href = item.link && item.link !== "#" ? item.link : "";
+      return `
+            <a class="atv-news-item" ${href ? `href="${esc(href)}" target="_blank" rel="noopener noreferrer"` : ""}>
+                <span class="atv-news-sentiment-dot ${esc(item.sentiment || "neutral")}"></span>
+                <span class="atv-news-title">${esc(item.title)}</span>
+                <span class="atv-news-source">${esc(item.source || "")}</span>
+            </a>`;
+    }).join("");
+    ticker.innerHTML = rows + rows;
+    const duration = Math.max(50, Math.floor(ticker.scrollHeight / 2 / 14));
+    ticker.style.animation = `newsScrollUp ${duration}s linear infinite`;
+  }
+  async function fetchSymbolNews(symbol) {
+    const ticker = getElement("atv-news-scroll");
+    if (!ticker || !symbol) return;
+    const key = symbol.toUpperCase();
+    if (symbolCache[key]?.length) {
+      renderSymbolHeadlines(symbolCache[key], ticker, symbol);
+    } else {
+      ticker.innerHTML = `<span class="news-ticker-loading">\u{1F4E1} Fetching news for ${esc(symbol)}\u2026</span>`;
+      ticker.style.animation = "none";
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 8e3);
+    try {
+      const headlines = await marketService.getSymbolNews(symbol, controller.signal);
+      if (headlines.length) symbolCache[key] = headlines;
+      if (headlines.length || !symbolCache[key]) renderSymbolHeadlines(headlines, ticker, symbol);
+    } catch (err) {
+      console.warn(`[News] ${symbol} news unavailable:`, err);
+      if (!symbolCache[key]) ticker.innerHTML = `<span class="news-ticker-loading">\u26A0\uFE0F Could not load news for ${esc(symbol)}.</span>`;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
+  // src/ui/terminalAgentController.ts
+  var terminalAsset = null;
+  var searchTimer;
+  function overlayWindow() {
+    return window;
+  }
+  function updateLegend(price, changePercent) {
+    const cls = changePercent >= 0 ? "legend-val text-green" : "legend-val text-red";
+    const priceEl = getElement("legend-price");
+    if (priceEl) {
+      priceEl.textContent = formatINR(price);
+      priceEl.className = cls;
+    }
+    const changeEl = getElement("legend-change");
+    if (changeEl) {
+      changeEl.textContent = `${changePercent >= 0 ? "+" : ""}${changePercent.toFixed(2)}%`;
+      changeEl.className = cls;
+    }
+  }
+  function handleTick(msg) {
+    if (!terminalAsset) return;
+    const symbol = typeof msg.symbol === "string" ? msg.symbol.toUpperCase() : terminalAsset;
+    if (symbol !== terminalAsset) return;
+    const price = Number(msg.candle?.close ?? msg.data?.price);
+    if (!Number.isFinite(price) || price <= 0) return;
+    updateLegend(price, Number(msg.changePercent ?? msg.data?.change_percent ?? 0));
+  }
+  function handleHistory(msg) {
+    if (!terminalAsset || !Array.isArray(msg.candles) || !msg.candles.length) return;
+    const last = msg.candles[msg.candles.length - 1];
+    updateLegend(Number(last.close), Number(msg.changePercent || 0));
+  }
+  function renderSRPanel() {
+    const panel = getElement("sr-levels-panel");
+    if (!panel) return;
+    if (!store.get("showSRLevels")) {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    const w2 = overlayWindow();
+    const badges = (levels, cls) => levels && levels.length ? levels.map((p) => `<span class="sr-badge ${cls}">${esc(formatINR(p))}</span>`).join("") : "<span class='sr-badge sr-none'>\u2014</span>";
+    const sup = getElement("sr-support-list");
+    if (sup) sup.innerHTML = badges(w2.lastSupports, "sr-support");
+    const res = getElement("sr-resistance-list");
+    if (res) res.innerHTML = badges(w2.lastResistances, "sr-resistance");
+  }
+  function handleLevels(msg) {
+    const w2 = overlayWindow();
+    w2.lastSupports = Array.isArray(msg.supports) ? msg.supports : [];
+    w2.lastResistances = Array.isArray(msg.resistances) ? msg.resistances : [];
+    w2.lastLiquidity = Array.isArray(msg.liquidity) ? msg.liquidity : [];
+    store.set("showSRLevels", true);
+    getElement("btn-draw-sr")?.classList.add("active-btn");
+    renderSRPanel();
+    drawChartOverlay();
+  }
+  function toggleSRLevels() {
+    const showLevels = !store.get("showSRLevels");
+    store.set("showSRLevels", showLevels);
+    getElement("btn-draw-sr")?.classList.toggle("active-btn", showLevels);
+    renderSRPanel();
+    drawChartOverlay(!showLevels);
+    logToTerminal("SYSTEM", showLevels ? "Displaying Support and Resistance levels on chart." : "Hiding Support and Resistance levels.");
+  }
+  function handleSignal(msg) {
+    const entry = Number(msg.entry), sl = Number(msg.sl), target = Number(msg.target);
+    if (!(entry > 0 && sl > 0 && target > 0)) return;
+    const signal = {
+      trade_id: typeof msg.trade_id === "number" ? msg.trade_id : null,
+      direction: String(msg.direction || (entry > sl ? "buy" : "sell")),
+      entry,
+      sl,
+      target,
+      quantity: typeof msg.quantity === "number" ? msg.quantity : void 0,
+      capital_required: typeof msg.capital_required === "number" ? msg.capital_required : void 0,
+      max_risk: typeof msg.max_risk === "number" ? msg.max_risk : void 0
+    };
+    store.set("pendingSignal", signal);
+    const risk = Math.abs(entry - sl);
+    const reward = Math.abs(target - entry);
+    const rr = risk > 0 ? `${(reward / risk).toFixed(2)} : 1` : "\u2014";
+    const dir = signal.direction.toUpperCase();
+    getElement("signal-levels-panel")?.classList.remove("hidden");
+    safeText(getElement("signal-entry"), formatINR(entry));
+    safeText(getElement("signal-sl"), formatINR(sl));
+    safeText(getElement("signal-target"), formatINR(target));
+    safeText(getElement("signal-rr"), rr);
+    const dirEl = getElement("tc-direction");
+    if (dirEl) {
+      dirEl.textContent = dir;
+      dirEl.className = "tc-val " + (dir === "BUY" ? "text-green" : "text-red");
+    }
+    safeText(getElement("tc-entry"), formatINR(entry));
+    safeText(getElement("tc-sl"), formatINR(sl));
+    safeText(getElement("tc-target"), formatINR(target));
+    safeText(getElement("tc-rr"), rr);
+    safeText(getElement("tc-capital"), formatINRSafe(signal.capital_required ?? (signal.quantity ? signal.quantity * entry : void 0)));
+    safeText(getElement("tc-max-risk"), formatINRSafe(signal.max_risk ?? (signal.quantity ? risk * signal.quantity : void 0)));
+    getElement("trade-confirm-modal")?.classList.remove("hidden");
+    logToTerminal("Risk Planner", `\u{1F4CB} Trade confirmation required: ${dir} @ Entry ${formatINR(entry)} | SL ${formatINR(sl)} | TP ${formatINR(target)}`);
+  }
+  function clearSignal() {
+    store.set("pendingSignal", null);
+    getElement("signal-levels-panel")?.classList.add("hidden");
+    getElement("trade-confirm-modal")?.classList.add("hidden");
+  }
+  function handleMetrics(msg) {
+    if (msg.consensus && msg.consensus.signal) {
+      const sig = String(msg.consensus.signal).toUpperCase();
+      const el2 = getElement("overview-consensus-status");
+      if (el2) {
+        el2.textContent = sig;
+        el2.className = sig === "BUY" || sig === "BULLISH" ? "text-green" : sig === "SELL" || sig === "BEARISH" ? "text-red" : sig === "MIXED" ? "text-yellow" : "text-blue";
+      }
+    }
+    if (typeof msg.sentiment === "number") {
+      const s = msg.sentiment;
+      const el2 = getElement("overview-sentiment-status");
+      if (el2) {
+        el2.textContent = s > 0.15 ? "BULLISH" : s < -0.15 ? "BEARISH" : "NEUTRAL";
+        el2.className = s > 0.15 ? "text-green" : s < -0.15 ? "text-red" : "text-cyan";
+      }
+    }
+    if (msg.trend && typeof msg.trend.strength === "string") {
+      const strength = msg.trend.strength;
+      const el2 = getElement("overview-trend-status");
+      if (el2) {
+        el2.textContent = strength.toUpperCase();
+        el2.className = strength.includes("uptrend") ? "text-green" : strength.includes("downtrend") ? "text-red" : "text-yellow";
+      }
+    }
+  }
+  function setAnalyzingMode(isAnalyzing) {
+    const analyzeBtn = getElement("initialize-agents-btn");
+    if (analyzeBtn) analyzeBtn.disabled = isAnalyzing;
+    const stopBtn = getElement("stop-btn");
+    if (stopBtn) stopBtn.disabled = !isAnalyzing;
+    const input = getElement("terminal-asset-input");
+    if (input) input.disabled = isAnalyzing;
+    const tradeBtn = getElement("trade-through-agent-btn");
+    if (tradeBtn) tradeBtn.disabled = isAnalyzing;
+    const status = getElement("system-status");
+    if (status) status.innerHTML = `<span class="status-dot green-glow"></span> ${isAnalyzing ? "ANALYZING" : "ONLINE"}`;
+    safeText(getElement("atv-status-label"), isAnalyzing ? "AI Crew Active" : "AI Crew Ready");
+  }
+  function handleSystemStatus(msg) {
+    setAnalyzingMode(msg.status === "running");
+  }
+  function resetAgentTicks() {
+    document.querySelectorAll(".agent-row").forEach((row) => {
+      row.classList.remove("active-agent", "completed-agent");
+      const statusEl = row.querySelector(".agent-row-status");
+      if (statusEl) statusEl.textContent = "Waiting\u2026";
+    });
+    getElement("atv-progress-wrap")?.classList.add("hidden");
+    const bar = getElement("atv-progress-bar");
+    if (bar) bar.style.width = "0%";
+  }
+  function prepareTradeEnvironment(rawSymbol) {
+    const symbol = (rawSymbol || "").trim().toUpperCase();
+    if (!symbol) return;
+    terminalAsset = symbol;
+    store.set("currentAsset", symbol);
+    safeText(getElement("current-asset-title"), `${symbol} Real-Time Chart`);
+    safeText(getElement("active-ticker-display"), symbol);
+    safeText(getElement("legend-price"), "\u2014");
+    safeText(getElement("legend-change"), "");
+    getElement("terminal-stock-select-view")?.classList.add("hidden-tab");
+    getElement("terminal-active-trading-view")?.classList.remove("hidden-tab");
+    resetAgentTicks();
+    clearSignal();
+    const w2 = overlayWindow();
+    w2.lastSupports = [];
+    w2.lastResistances = [];
+    w2.lastLiquidity = [];
+    store.set("showSRLevels", false);
+    getElement("btn-draw-sr")?.classList.remove("active-btn");
+    renderSRPanel();
+    drawChartOverlay(true);
+    initChart(symbol);
+    fetchSymbolNews(symbol);
+    logToTerminal("SYSTEM", `Environment ready for ${symbol}. Launching AI Crew...`);
+    window.setTimeout(runAgentCrew, 400);
+  }
+  function runAgentCrew() {
+    if (!terminalAsset) return;
+    getElement("atv-progress-wrap")?.classList.remove("hidden");
+    if (store.sockets.send({ action: "start", asset: terminalAsset })) {
+      logToTerminal("SYSTEM", `Launching AI pipeline for ${terminalAsset}...`);
+      setAnalyzingMode(true);
+      return;
+    }
+    logToTerminal("SYSTEM", "The live connection to the ORBIT engine is not open yet; retrying...");
+    const asset = terminalAsset;
+    window.setTimeout(() => {
+      if (terminalAsset === asset && store.sockets.isPrimaryOpen()) runAgentCrew();
+      else if (terminalAsset === asset) logToTerminal("SYSTEM", "Could not reach the ORBIT engine. Check the connection and press Trade Through Agent.");
+    }, 2500);
+  }
+  function stopAgentCrew() {
+    store.sockets.send({ action: "stop" });
+    logToTerminal("SYSTEM", "Stopping active agent pipeline.");
+    setAnalyzingMode(false);
+    terminalAsset = null;
+    clearSignal();
+    window.setTimeout(() => {
+      getElement("terminal-active-trading-view")?.classList.add("hidden-tab");
+      getElement("terminal-stock-select-view")?.classList.remove("hidden-tab");
+      store.set("showSRLevels", false);
+      getElement("btn-draw-sr")?.classList.remove("active-btn");
+      renderSRPanel();
+    }, 300);
+  }
+  function hideSuggestions() {
+    getElement("ticker-suggestions")?.classList.add("hidden");
+  }
+  function onAssetInput(input) {
+    window.clearTimeout(searchTimer);
+    const box = getElement("ticker-suggestions");
+    const q = input.value.trim();
+    if (!box || !q) {
+      hideSuggestions();
+      return;
+    }
+    searchTimer = window.setTimeout(async () => {
+      try {
+        const results = await marketService.searchSymbols(q);
+        if (!results.length || input.value.trim() !== q) {
+          if (!results.length) hideSuggestions();
+          return;
+        }
+        box.innerHTML = results.slice(0, 8).map((r) => `
+                <div class="suggestion-item" data-ticker="${esc(r.symbol)}">
+                    <strong>${esc(r.symbol)}</strong>
+                    <span>${esc(r.name)}</span>
+                    <span>${esc(r.exchange || r.type || "")}</span>
+                </div>`).join("");
+        box.classList.remove("hidden");
+        box.querySelectorAll(".suggestion-item").forEach((item) => {
+          item.addEventListener("click", () => {
+            const ticker = item.getAttribute("data-ticker") || "";
+            input.value = ticker;
+            hideSuggestions();
+            prepareTradeEnvironment(ticker);
+          });
+        });
+      } catch {
+        hideSuggestions();
+      }
+    }, 250);
+  }
+  function initTerminalAgentListeners() {
+    const input = getElement("terminal-asset-input");
+    getElement("initialize-agents-btn")?.addEventListener("click", () => prepareTradeEnvironment(input?.value || ""));
+    if (input) {
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          hideSuggestions();
+          prepareTradeEnvironment(input.value);
+        } else if (e.key === "Escape") {
+          hideSuggestions();
+        }
+      });
+      input.addEventListener("input", () => onAssetInput(input));
+    }
+    document.querySelectorAll(".quick-pick-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const ticker = btn.getAttribute("data-ticker");
+        if (!ticker) return;
+        if (input) input.value = ticker;
+        prepareTradeEnvironment(ticker);
+      });
+    });
+    getElement("stop-btn")?.addEventListener("click", stopAgentCrew);
+    getElement("btn-draw-sr")?.addEventListener("click", toggleSRLevels);
+    getElement("trade-through-agent-btn")?.addEventListener("click", runAgentCrew);
+    document.addEventListener("click", (e) => {
+      const box = getElement("ticker-suggestions");
+      const target = e.target;
+      if (box && target && !box.contains(target) && !(input && input.contains(target))) hideSuggestions();
+    });
+  }
+
+  // src/services/tradingService.ts
+  function withUser(path, userId, params = new URLSearchParams()) {
+    if (userId !== null && userId !== void 0 && userId !== "") params.set("user_id", String(userId));
+    const qs = params.toString();
+    return qs ? `${path}?${qs}` : path;
+  }
+  var tradingService = {
+    async getOpenPositions(userId) {
+      const res = await apiClient.get(withUser("/api/trades/open", userId));
+      return res.positions || res.trades || [];
+    },
+    async getPendingOrders(userId) {
+      const res = await apiClient.get(withUser("/api/trades/pending", userId));
+      return res.orders || [];
+    },
+    async getTradeHistory(query = {}) {
+      const params = new URLSearchParams();
+      const limit = query.limit ?? 20;
+      const offset = query.offset ?? 0;
+      params.set("limit", String(limit));
+      params.set("offset", String(offset));
+      for (const key of ["symbol", "market", "side", "outcome", "source"]) {
+        const value = query[key];
+        if (value) params.set(key, value);
+      }
+      const res = await apiClient.get(
+        withUser("/api/trades/history", query.user_id, params)
+      );
+      const trades = Array.isArray(res.trades) ? res.trades : [];
+      return {
+        trades,
+        total: typeof res.total === "number" ? res.total : trades.length,
+        page: limit > 0 ? Math.floor(offset / limit) : 0,
+        limit
+      };
+    },
+    closePositionPartial(tradeId, quantity, userId) {
+      const body = { quantity };
+      if (userId !== null && userId !== void 0 && userId !== "") body.user_id = Number(userId);
+      return apiClient.post(`/api/trades/${tradeId}/close`, body);
+    },
+    closePositionFull(tradeId, userId) {
+      return apiClient.post(withUser(`/api/trades/${tradeId}/close/full`, userId), {});
+    }
+  };
+
+  // src/services/portfolioService.ts
+  function userQuery(userId) {
+    return userId !== null && userId !== void 0 && userId !== "" ? `?user_id=${encodeURIComponent(userId)}` : "";
+  }
+  var portfolioService = {
+    getDashboardSummary(userId) {
+      return apiClient.get(`/api/dashboard/summary${userQuery(userId)}`);
+    },
+    async getReport(userId) {
+      const res = await apiClient.get(`/api/report${userQuery(userId)}`);
+      return res.report;
+    }
+  };
+
   // src/ui/manageTradesController.ts
   var _isCloseExecuting = false;
   var _historySearchDebounceTimer = null;
@@ -1933,6 +2442,7 @@
         loadOpenTrades(),
         loadPendingOrders(),
         loadTradeHistoryPage(store.get("historyPage") || 0),
+        loadOverviewHistory(),
         typeof window.fetchGlobalNews === "function" ? window.fetchGlobalNews() : Promise.resolve()
       ]);
       const anyFailed = results.some((r) => r.status === "rejected");
@@ -1981,7 +2491,7 @@
     const countBadge = getElement("manage-open-count");
     const overviewActiveEl = getElement("overview-active-trades");
     try {
-      const userId = store.get("currentUserId") || 1;
+      const userId = store.get("currentUserId");
       const positions = await tradingService.getOpenPositions(userId);
       store.set("openTrades", positions);
       if (countBadge) countBadge.textContent = String(positions.length);
@@ -1997,7 +2507,7 @@
       }
       tbody.innerHTML = positions.map((pos) => {
         const pnl = Number(pos.unrealized_pnl || pos.pnl || 0);
-        const pnlClass = pnl >= 0 ? "text-green" : "text-red";
+        const pnlClass2 = pnl >= 0 ? "text-green" : "text-red";
         const side = (pos.side || pos.type || "buy").toUpperCase();
         const sideClass = side === "BUY" || side === "LONG" ? "badge-green" : "badge-red";
         const sideLabel = side === "BUY" ? "LONG" : side === "SELL" ? "SHORT" : side;
@@ -2023,7 +2533,7 @@
                     <td><span class="text-cyan font-bold">${lev}x</span></td>
                     <td>${formatINR(posSize)}</td>
                     <td>${formatINR(marginUsed)}</td>
-                    <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pnlPct}%)</span></td>
+                    <td class="${pnlClass2}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pnlPct}%)</span></td>
                     <td>${openTime}</td>
                     <td>
                         <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})">
@@ -2044,7 +2554,7 @@
     const tbody = getElement("pending-orders-tbody");
     const countBadge = getElement("manage-pending-count");
     try {
-      const userId = store.get("currentUserId") || 1;
+      const userId = store.get("currentUserId");
       const orders = await tradingService.getPendingOrders(userId);
       store.set("pendingOrders", orders);
       if (countBadge) countBadge.textContent = String(orders.length);
@@ -2115,9 +2625,9 @@
     const limit = 15;
     const offset = currentPage * limit;
     try {
-      const userId = store.get("currentUserId") || 1;
+      const userId = store.get("currentUserId");
       const res = await tradingService.getTradeHistory({
-        user_id: userId,
+        user_id: userId ?? void 0,
         limit,
         offset,
         symbol: search || void 0,
@@ -2145,7 +2655,7 @@
       }
       tbody.innerHTML = trades.map((trade) => {
         const pnl = Number(trade.realized_pnl !== void 0 ? trade.realized_pnl : trade.pnl || 0);
-        const pnlClass = pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : "";
+        const pnlClass2 = pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : "";
         const tradeSide = (trade.side || trade.type || "buy").toUpperCase();
         const sideLabel = tradeSide === "BUY" ? "LONG" : tradeSide === "SELL" ? "SHORT" : tradeSide;
         const sideClass = tradeSide === "BUY" || tradeSide === "LONG" ? "badge-green" : "badge-red";
@@ -2174,7 +2684,7 @@
                     <td><strong>${exitPrice}</strong></td>
                     <td>${Number(trade.quantity || 0)}</td>
                     <td><span class="text-cyan font-bold">${lev}x</span></td>
-                    <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong></td>
+                    <td class="${pnlClass2}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong></td>
                     <td><span class="badge ${outcomeClass}">${esc(tradeOutcome).toUpperCase()}</span></td>
                     <td>${openTime}</td>
                     <td>${closeTime}</td>
@@ -2340,14 +2850,14 @@
     if (btn) btn.disabled = true;
     if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
     try {
-      const uid = store.get("currentUserId") || localStorage.getItem("orbit_user_id") || 1;
+      const uid = store.get("currentUserId");
       let realizedPnl = 0;
       if (isFullClose) {
         const res = await tradingService.closePositionFull(tradeId, uid);
-        realizedPnl = res.realized_pnl;
+        realizedPnl = Number(res.realized_pnl ?? 0);
       } else {
         const res = await tradingService.closePositionPartial(tradeId, closeQty, uid);
-        realizedPnl = res.realized_pnl;
+        realizedPnl = Number(res.realized_pnl ?? 0);
       }
       closeManageTradeModal();
       await Promise.all([
@@ -2372,140 +2882,218 @@
       if (btnText) btnText.innerHTML = '<i class="fa-solid fa-check"></i> Confirm Close';
     }
   }
+  function renderDashboardSummary(summary) {
+    if (!summary || !summary.account || !summary.trading) return;
+    store.set("dashboardSummary", summary);
+    const { account, trading } = summary;
+    safeText(getElement("overview-balance"), formatINRSafe(account.total_capital));
+    store.set("walletBalance", Number.isFinite(account.available_balance) ? account.available_balance : null);
+    safeText(getElement("wallet-balance"), formatINRSafe(account.available_balance));
+    safeText(getElement("copilot-account-balance"), formatINRSafe(account.available_balance));
+    safeText(getElement("overview-active-trades"), String(trading.active_trades ?? 0));
+    const setPnl = (id, value) => {
+      const el2 = getElement(id);
+      if (!el2) return;
+      el2.textContent = (value >= 0 ? "+" : "") + formatINR(value);
+      el2.className = "stat-value " + (value >= 0 ? "text-green" : "text-red");
+    };
+    setPnl("overview-unrealized-pnl", Number(trading.unrealized_pnl) || 0);
+    setPnl("overview-realized-pnl", Number(trading.realized_pnl) || 0);
+    const winRateEl = getElement("overview-win-rate");
+    const bar = getElement("overview-winrate-bar");
+    if (trading.win_rate !== null && trading.win_rate !== void 0 && trading.total_closed_trades > 0) {
+      if (winRateEl) winRateEl.textContent = `${Number(trading.win_rate).toFixed(1)}%`;
+      if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(trading.win_rate)))}%`;
+    } else {
+      if (winRateEl) winRateEl.textContent = "\u2014";
+      if (bar) bar.style.width = "0%";
+    }
+    safeText(getElement("overview-win-loss-text"), `${trading.winning_trades_count ?? 0} Wins | ${trading.losing_trades_count ?? 0} Losses`);
+  }
   async function fetchDashboardSummary() {
     try {
-      const userId = store.get("currentUserId") || 1;
-      const summary = await portfolioService.getDashboardSummary(userId);
-      store.set("dashboardSummary", summary);
-      safeText(getElement("overview-equity"), formatINR(summary.equity));
-      safeText(getElement("overview-cash-balance"), formatINR(summary.balance));
-      safeText(getElement("overview-used-margin"), formatINR(summary.used_margin));
-      safeText(getElement("wallet-balance"), formatINR(summary.balance));
-      const uPnl = summary.unrealized_pnl ?? summary.total_unrealized_pnl;
-      const rPnl = summary.realized_pnl ?? summary.total_realized_pnl;
-      const pnlEl = getElement("overview-unrealized-pnl");
-      if (pnlEl) {
-        pnlEl.textContent = (uPnl >= 0 ? "+" : "") + formatINR(uPnl);
-        pnlEl.className = uPnl >= 0 ? "metric-val text-green" : "metric-val text-red";
-      }
-      const realizedEl = getElement("overview-realized-pnl");
-      if (realizedEl) {
-        realizedEl.textContent = (rPnl >= 0 ? "+" : "") + formatINR(rPnl);
-        realizedEl.className = rPnl >= 0 ? "metric-val text-green" : "metric-val text-red";
-      }
-      const winRateEl = getElement("overview-win-rate");
-      if (winRateEl) {
-        winRateEl.textContent = summary.win_rate !== null && summary.win_rate !== void 0 ? `${summary.win_rate.toFixed(1)}%` : "\u2014";
-      }
+      renderDashboardSummary(await portfolioService.getDashboardSummary(store.get("currentUserId")));
     } catch (err) {
       console.error("[Dashboard] Error fetching summary:", err);
     }
   }
+  async function loadOverviewHistory() {
+    const list = getElement("overview-history-list");
+    const count = getElement("overview-history-count");
+    if (!list && !count) return;
+    try {
+      const res = await tradingService.getTradeHistory({ user_id: store.get("currentUserId") ?? void 0, limit: 10, offset: 0 });
+      if (count) count.textContent = `${res.total} trade${res.total === 1 ? "" : "s"}`;
+      if (!list) return;
+      if (!res.trades.length) {
+        list.innerHTML = `<div class="crew-history-empty"><i class="fa-solid fa-hourglass-half"></i><p>No completed trades yet</p></div>`;
+        return;
+      }
+      list.innerHTML = res.trades.map((t) => {
+        const pnl = Number(t.realized_pnl ?? t.pnl ?? 0);
+        const isBuy = String(t.type || "").toLowerCase() === "buy";
+        const outcome = t.outcome === "target" ? "TP" : t.outcome === "cancelled" ? "CX" : t.outcome === "sl" ? "SL" : "MC";
+        const time = t.closed_at || t.timestamp;
+        return `
+                <div class="crew-history-item">
+                    <div class="chi-direction ${isBuy ? "buy" : "sell"}">${isBuy ? "\u25B2" : "\u25BC"}</div>
+                    <div class="chi-details">
+                        <div class="chi-asset">${esc(t.symbol || t.asset || "\u2014")}</div>
+                        <div class="chi-time">${time ? new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "\u2014"}</div>
+                    </div>
+                    <span class="chi-pnl ${pnl >= 0 ? "text-green" : "text-red"}">${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</span>
+                    <span class="chi-outcome ${t.outcome === "target" ? "target" : "stop"}">${outcome}</span>
+                </div>`;
+      }).join("");
+    } catch (err) {
+      console.warn("[Dashboard] Recent trades unavailable:", err);
+    }
+  }
 
   // src/services/aiService.ts
+  function analysisUrl(path, symbol, timeframe) {
+    return `${path}?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`;
+  }
+  async function getData(url) {
+    return unwrapData(await apiClient.get(url));
+  }
   var aiService = {
-    async analyzeAgents(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/agents/analyze?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    analyzeAgents(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/agents/analyze", symbol, timeframe));
     },
-    async evaluateStrategies(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/strategies/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    evaluateStrategies(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/strategies/evaluate", symbol, timeframe));
     },
-    async evaluateConsensus(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/consensus/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    evaluateConsensus(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/consensus/evaluate", symbol, timeframe));
     },
-    async analyzeBrain(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/brain/analyze?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    analyzeBrain(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/brain/analyze", symbol, timeframe));
     },
-    async evaluateRisk(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/risk/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    evaluateRisk(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/risk/evaluate", symbol, timeframe));
     },
-    async evaluateOpportunity(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/opportunity/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    evaluateOpportunity(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/opportunity/evaluate", symbol, timeframe));
     },
-    async evaluateDecision(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/decision/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    evaluateDecision(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/decision/evaluate", symbol, timeframe));
     },
-    async evaluateExplainability(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/explain/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
-    },
-    async evaluateExplanation(symbol, timeframe = "1d") {
-      return this.evaluateExplainability(symbol, timeframe);
+    evaluateExplanation(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/explain/evaluate", symbol, timeframe));
     },
     async chatCopilot(req) {
-      return apiClient.post("/api/copilot/chat", req);
+      return unwrapData(await apiClient.post("/api/copilot/chat", req));
     },
-    async getCopilotContext(symbol, timeframe = "1d") {
-      return apiClient.get(
-        `/api/copilot/context?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-      );
+    getCopilotContext(symbol, timeframe = "1d") {
+      return getData(analysisUrl("/api/copilot/context", symbol, timeframe));
     },
-    async resetCopilotSession(symbol) {
-      return apiClient.post("/api/copilot/reset", { symbol });
+    async resetCopilotSession(conversationId) {
+      await apiClient.post("/api/copilot/reset", { conversation_id: conversationId });
+    },
+    listConversations(limit = 40) {
+      return getData(`/api/chat/conversations?limit=${encodeURIComponent(limit)}`);
+    },
+    getConversation(conversationId) {
+      return getData(`/api/chat/conversations/${encodeURIComponent(conversationId)}`);
+    },
+    async deleteConversation(conversationId) {
+      await apiClient.delete(`/api/chat/conversations/${encodeURIComponent(conversationId)}`);
     }
   };
 
   // src/ui/aiModalsController.ts
-  function openStrategyModal() {
-    const modal = getElement("strategy-inspect-modal");
-    if (!modal) return;
+  var el = (id) => getElement(id);
+  function num(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function activeContext() {
+    return { asset: store.get("currentAsset") || "BTC-USD", tf: store.get("currentTimeframe") || "1d" };
+  }
+  function errorText(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+  function statusColor(status, ready = "var(--pos)") {
+    if (status === "READY") return ready;
+    if (status === "PARTIAL") return "#facc15";
+    if (status === "LIMITED") return "#f97316";
+    return "var(--neg)";
+  }
+  function scoreHtml(value, decimals = 1) {
+    return `${value.toFixed(decimals)}<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+  }
+  function show(id) {
+    const modal = el(id);
+    if (!modal) return false;
     modal.classList.remove("hidden");
-    const sub = getElement("strat-modal-subtitle");
-    if (sub) {
-      sub.textContent = `Evaluating real-time market setups on ${store.get("currentAsset") || "BTC-USD"} (${store.get("currentTimeframe") || "1d"})`;
+    return true;
+  }
+  function hide(id) {
+    el(id)?.classList.add("hidden");
+  }
+  function renderEvidenceCard(e, modifier) {
+    const cardClass = `evidence-card ${modifier}`;
+    const badgeClass = e.signal === "BULLISH" ? "strat-eval-badge strat-badge-bullish" : e.signal === "BEARISH" ? "strat-eval-badge strat-badge-bearish" : "strat-eval-badge strat-badge-neutral";
+    const srcType = e.evidence_type || e.source_type || "SOURCE";
+    const reasonText = e.summary || e.reasoning || "Analysis criteria evaluated.";
+    return `
+        <div class="${cardClass}">
+            <div class="evidence-card-header">
+                <div class="evidence-source-info">
+                    <span class="evidence-type-badge">${esc(srcType)}</span>
+                    <span class="evidence-source-name">${esc(e.source_name)}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span class="${badgeClass}">${esc(e.signal)}</span>
+                    <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);">${num(e.confidence).toFixed(0)}%</span>
+                </div>
+            </div>
+            <div class="evidence-card-reason">${esc(reasonText)}</div>
+        </div>`;
+  }
+  function factorList(items, itemClass, titleClass, icon, empty) {
+    if (!items.length) {
+      return `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">${empty}</div>`;
     }
-    refreshStrategyModal();
+    return items.map(
+      (f) => `
+            <div class="${itemClass}">
+                <div class="${titleClass}">
+                    <i class="${icon}"></i>
+                    <span>${esc(f.title)}</span>
+                </div>
+                <div class="${titleClass.replace("-title", "-detail").split(" ")[0]}">${esc(f.detail)}</div>
+            </div>`
+    ).join("");
+  }
+  function openStrategyModal() {
+    if (show("strategy-inspect-modal")) refreshStrategyModal();
   }
   function closeStrategyModal() {
-    const modal = getElement("strategy-inspect-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("strategy-inspect-modal");
   }
   async function refreshStrategyModal() {
-    const grid = getElement("strategy-modal-grid");
-    const tallyEl = getElement("strat-tally-text");
-    const timeBadge = getElement("strat-time-badge");
-    const sub = getElement("strat-modal-subtitle");
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
+    const grid = el("strategy-modal-grid");
+    const tallyEl = el("strat-tally-text");
+    const timeBadge = el("strat-time-badge");
+    const { asset, tf } = activeContext();
+    const sub = el("strat-modal-subtitle");
     if (sub) sub.textContent = `Evaluating real-time market setups on ${asset} (${tf})`;
     if (tallyEl) tallyEl.innerHTML = `<span class="status-dot green-glow"></span> Querying Market Data System...`;
     try {
       const data = await aiService.evaluateStrategies(asset, tf);
-      if (timeBadge) timeBadge.textContent = `${data.execution_time_ms.toFixed(1)} ms`;
-      const bullCount = data.tally?.BULLISH || 0;
-      const bearCount = data.tally?.BEARISH || 0;
-      const setupsFound = data.setups_found || data.setups_detected_count || 0;
-      const totalStrats = data.strategies_total || data.total_strategies || 12;
-      const avgConf = data.average_confidence !== void 0 ? data.average_confidence : 0;
+      if (timeBadge) timeBadge.textContent = `${num(data.execution_time_ms).toFixed(1)} ms`;
+      const tally = data.tally || {};
       if (tallyEl) {
-        tallyEl.innerHTML = `<strong>${setupsFound} of ${totalStrats}</strong> Setups Active &bull; <span class="text-green">${bullCount} Bullish</span> &bull; <span class="text-red">${bearCount} Bearish</span> &bull; Avg Confidence: <strong>${avgConf}%</strong>`;
+        tallyEl.innerHTML = `<strong>${num(data.setups_found)} of ${num(data.strategies_total)}</strong> Setups Active &bull; <span class="text-green">${num(tally.BULLISH)} Bullish</span> &bull; <span class="text-red">${num(tally.BEARISH)} Bearish</span> &bull; Avg Confidence: <strong>${num(data.average_confidence)}%</strong>`;
       }
       if (grid && Array.isArray(data.results)) {
         grid.innerHTML = data.results.map((r) => {
-          const isSetup = r.setup_detected;
+          const isSetup = !!r.setup_detected;
           const cardClass = isSetup ? r.signal === "BULLISH" ? "strat-eval-card setup-active" : "strat-eval-card setup-bearish" : "strat-eval-card";
           const badgeClass = r.signal === "BULLISH" ? "strat-eval-badge strat-badge-bullish" : r.signal === "BEARISH" ? "strat-eval-badge strat-badge-bearish" : "strat-eval-badge strat-badge-neutral";
-          const statusTag = isSetup ? "\u25CF SETUP ACTIVE" : "\u25CB NO SETUP";
-          const conditionsHtml = Object.entries(r.conditions || {}).map(([k, v]) => {
-            const tagClass = v ? "cond-tag cond-true" : "cond-tag cond-false";
-            const icon = v ? "\u2713" : "\u2717";
-            return `<span class="${tagClass}">${icon} ${esc(k.replace(/_/g, " "))}</span>`;
-          }).join("");
+          const conditionsHtml = Object.entries(r.conditions || {}).map(([k, v]) => `<span class="cond-tag ${v ? "cond-true" : "cond-false"}">${v ? "\u2713" : "\u2717"} ${esc(k.replace(/_/g, " "))}</span>`).join("");
           return `
                     <div class="${cardClass}">
                         <div class="strat-eval-header">
@@ -2514,190 +3102,662 @@
                                 <span class="strat-eval-name">${esc(r.strategy_name)}</span>
                             </div>
                             <div style="display:flex;align-items:center;gap:8px;">
-                                <span style="font-size:11px;font-family:var(--font-mono);font-weight:600;color:${isSetup ? "var(--accent)" : "var(--text-3)"}">${statusTag}</span>
-                                <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-2);">${r.confidence.toFixed(
-            1
-          )}%</span>
+                                <span style="font-size:11px;font-family:var(--font-mono);font-weight:600;color:${isSetup ? "var(--accent)" : "var(--text-3)"}">${isSetup ? "\u25CF SETUP ACTIVE" : "\u25CB NO SETUP"}</span>
+                                <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-2);">${num(r.confidence).toFixed(1)}%</span>
                             </div>
                         </div>
-                        <p class="strat-eval-reason">${esc(
-            r.reasoning && r.reasoning[0] ? r.reasoning[0] : "Strategy criteria evaluated."
-          )}</p>
+                        <p class="strat-eval-reason">${esc(r.reasoning && r.reasoning[0] ? r.reasoning[0] : "Strategy criteria evaluated.")}</p>
                         ${conditionsHtml ? `<div class="strat-eval-conditions">${conditionsHtml}</div>` : ""}
-                    </div>
-                `;
+                    </div>`;
         }).join("");
       }
     } catch (err) {
-      console.error("[StrategyModal] Error:", err);
-      if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Evaluation failed: ${esc(err.message)}`;
-      if (grid) grid.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Failed to evaluate strategies. ${esc(err.message)}</div>`;
+      if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Evaluation failed: ${esc(errorText(err))}`;
+      if (grid) grid.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Failed to evaluate strategies. ${esc(errorText(err))}</div>`;
     }
   }
   function openConsensusModal() {
-    const modal = getElement("consensus-inspect-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshConsensusModal();
+    if (show("consensus-inspect-modal")) refreshConsensusModal();
   }
   function closeConsensusModal() {
-    const modal = getElement("consensus-inspect-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("consensus-inspect-modal");
   }
   async function refreshConsensusModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
-    const sub = getElement("consensus-modal-subtitle");
-    if (sub) sub.textContent = `Synthesizing AI Agents & Quant Strategies for ${asset} (${tf})`;
+    const body = el("consensus-modal-body");
+    const tallyEl = el("consensus-tally-text");
+    const { asset, tf } = activeContext();
+    const sub = el("consensus-modal-subtitle");
+    if (sub) sub.textContent = `Unified Market Consensus on ${asset} (${tf})`;
+    if (tallyEl) tallyEl.innerHTML = `<span class="status-dot green-glow"></span> Running Agents & Quantitative Strategies...`;
     try {
       const data = await aiService.evaluateConsensus(asset, tf);
-      const signal = data.signal || data.consensus_signal || "NEUTRAL";
-      const confidence = data.confidence !== void 0 ? data.confidence : data.conviction_score || 0;
-      safeText(getElement("consensus-primary-signal"), signal);
-      safeText(getElement("consensus-agreement-score"), `${data.agreement_score.toFixed(1)}%`);
-      safeText(getElement("consensus-time-badge"), `${data.execution_time_ms.toFixed(1)} ms`);
-      const badge = getElement("consensus-primary-signal");
-      if (badge) {
-        badge.className = `consensus-status-badge ${signal === "BULLISH" ? "status-bullish" : signal === "BEARISH" ? "status-bearish" : "status-neutral"}`;
+      const timeBadge = el("consensus-time-badge");
+      if (timeBadge) timeBadge.textContent = `${num(data.execution_time_ms).toFixed(1)} ms`;
+      const sig = data.consensus_signal || "NEUTRAL";
+      const strength = num(data.consensus_strength);
+      const agreement = num(data.agreement_score);
+      const view = data.market_view;
+      const viewTitle = view && typeof view === "object" ? view.title : view || "Market Equilibrium";
+      const viewSummary = view && typeof view === "object" ? view.summary : data.summary_reasoning || "";
+      const overview = el("overview-consensus-status");
+      if (overview) {
+        overview.textContent = `${sig} (${strength.toFixed(0)}%)`;
+        overview.className = sig === "BULLISH" ? "text-green" : sig === "BEARISH" ? "text-red" : sig === "MIXED" ? "text-yellow" : "text-blue";
       }
-      const bar = getElement("consensus-force-fill");
-      if (bar) {
-        bar.style.width = `${Math.min(100, Math.max(0, confidence))}%`;
-        bar.style.backgroundColor = signal === "BULLISH" ? "var(--pos)" : signal === "BEARISH" ? "var(--neg)" : "var(--accent)";
+      const pill = el("consensus-signal-pill");
+      if (pill) {
+        pill.textContent = sig;
+        pill.className = `consensus-signal-pill ${sig.toLowerCase()}`;
       }
-      const reasonEl = getElement("consensus-explanation-text");
-      if (reasonEl) {
-        reasonEl.textContent = data.rationale || data.institutional_view || "Consensus synthesized across quantitative engines.";
+      const titleEl = el("consensus-view-title");
+      if (titleEl) titleEl.textContent = String(viewTitle || "");
+      const subEl = el("consensus-view-sub");
+      if (subEl) subEl.textContent = String(viewSummary || "");
+      const strengthEl = el("consensus-strength-val");
+      if (strengthEl) strengthEl.textContent = `${strength.toFixed(1)}%`;
+      const agreementEl = el("consensus-agreement-val");
+      if (agreementEl) agreementEl.textContent = `${agreement.toFixed(1)}%`;
+      const levelEl = el("consensus-agreement-level");
+      if (levelEl) {
+        const level = String(data.agreement_level || "\u2014");
+        levelEl.textContent = level;
+        levelEl.className = `consensus-metric-val ${level.includes("STRONG") ? "text-green" : level.includes("CONFLICT") || level.includes("INSUFFICIENT") ? "text-red" : "text-yellow"}`;
+      }
+      const bull = num(data.agent_tally?.BULLISH) + num(data.strategy_tally?.BULLISH);
+      const neut = num(data.agent_tally?.NEUTRAL) + num(data.strategy_tally?.NEUTRAL);
+      const bear = num(data.agent_tally?.BEARISH) + num(data.strategy_tally?.BEARISH);
+      const total = bull + neut + bear || 1;
+      const pBull = (bull / total * 100).toFixed(1);
+      const pNeut = (neut / total * 100).toFixed(1);
+      const pBear = (bear / total * 100).toFixed(1);
+      const bullLbl = el("consensus-bull-force-lbl");
+      if (bullLbl) bullLbl.innerHTML = `<i class="fa-solid fa-arrow-up"></i> Bullish ${pBull}% (${bull})`;
+      const neutLbl = el("consensus-neutral-force-lbl");
+      if (neutLbl) neutLbl.textContent = `Neutral ${pNeut}% (${neut})`;
+      const bearLbl = el("consensus-bear-force-lbl");
+      if (bearLbl) bearLbl.innerHTML = `Bearish ${pBear}% (${bear}) <i class="fa-solid fa-arrow-down"></i>`;
+      const setWidth = (id, pct) => {
+        const bar = el(id);
+        if (bar) bar.style.width = `${pct}%`;
+      };
+      setWidth("consensus-bar-bull", pBull);
+      setWidth("consensus-bar-neut", pNeut);
+      setWidth("consensus-bar-bear", pBear);
+      if (tallyEl) {
+        tallyEl.innerHTML = `<strong>${num(data.total_evidence_evaluated, total)}</strong> Total Sources &bull; <span class="text-green">${bull} Bullish</span> &bull; <span class="text-3">${neut} Neutral</span> &bull; <span class="text-red">${bear} Bearish</span> &bull; Status: <strong>${esc(data.status)}</strong>`;
+      }
+      if (body) {
+        let html = "";
+        const conflicting = Array.isArray(data.conflicting_evidence) ? data.conflicting_evidence : [];
+        const supporting = Array.isArray(data.supporting_evidence) ? data.supporting_evidence : [];
+        const ignored = Array.isArray(data.ignored_evidence) ? data.ignored_evidence : [];
+        if (conflicting.length) {
+          html += `<div class="consensus-section-header" style="color:#facc15;"><i class="fa-solid fa-triangle-exclamation"></i><span>Conflicting Evidence (${conflicting.length})</span></div>
+                    <div class="evidence-grid">${conflicting.map((e) => renderEvidenceCard(e, "conflict")).join("")}</div>`;
+        }
+        if (supporting.length) {
+          html += `<div class="consensus-section-header" style="color:var(--pos);"><i class="fa-solid fa-shield-check"></i><span>Primary Supporting Evidence (${supporting.length})</span></div>
+                    <div class="evidence-grid">${supporting.map((e) => renderEvidenceCard(e, "supporting")).join("")}</div>`;
+        }
+        if (ignored.length) {
+          html += `<div class="consensus-section-header" style="color:var(--text-4);margin-top:12px;"><i class="fa-solid fa-ban"></i><span>Ignored / Inactive Signals (${ignored.length})</span></div>
+                    <div class="evidence-grid">${ignored.map(
+            (e) => `
+                        <div class="evidence-card failed">
+                            <div class="evidence-card-header">
+                                <div class="evidence-source-info">
+                                    <span class="evidence-type-badge">${esc(e.type || e.evidence_type || "UNKNOWN")}</span>
+                                    <span class="evidence-source-name">${esc(e.id || e.source_name || "Source")}</span>
+                                </div>
+                                <span class="strat-eval-badge strat-badge-neutral">${esc(e.reason || "SKIPPED")}</span>
+                            </div>
+                            <div class="evidence-card-reason">${esc(e.detail || e.summary || "Source omitted from voting.")}</div>
+                        </div>`
+          ).join("")}</div>`;
+        }
+        body.innerHTML = html || `<div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">No evidence items were produced for ${esc(asset)}.</div>`;
       }
     } catch (err) {
-      console.error("[ConsensusModal] Error:", err);
+      if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Error: ${esc(errorText(err))}`;
+      if (body) body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Error connecting to Consensus Engine: ${esc(errorText(err))}</div>`;
     }
   }
   function openBrainModal() {
-    const modal = getElement("brain-inspect-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshBrainModal();
+    if (show("brain-inspect-modal")) refreshBrainModal();
   }
   function closeBrainModal() {
-    const modal = getElement("brain-inspect-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("brain-inspect-modal");
   }
   async function refreshBrainModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
-    const sub = getElement("brain-modal-subtitle");
-    if (sub) sub.textContent = `Central Intelligence Orchestrator \u2022 ${asset} (${tf})`;
+    const { asset, tf } = activeContext();
+    const sub = el("brain-modal-subtitle");
+    if (sub) sub.textContent = `Central Intelligence Orchestration Dossier on ${asset} (${tf})`;
+    const execText = el("brain-exec-summary-text");
+    const statusTag = el("brain-status-tag");
+    if (execText) execText.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Orchestrating market data, AI agents, strategies and consensus...`;
     try {
       const data = await aiService.analyzeBrain(asset, tf);
-      safeText(getElement("brain-completeness-score"), `${data.completeness_score.toFixed(0)}%`);
-      const price = data.market?.current_price ?? data.market_summary?.current_price;
-      safeText(getElement("brain-market-price"), price !== void 0 ? `$${price.toLocaleString()}` : "\u2014");
-      const lat = data.diagnostics?.execution_time_ms ?? data.diagnostics?.subsystem_latencies_ms?.total ?? 0;
-      safeText(getElement("brain-time-badge"), `${lat.toFixed(1)} ms`);
-      const bar = getElement("brain-completeness-fill");
-      if (bar) bar.style.width = `${data.completeness_score}%`;
+      if (statusTag) {
+        statusTag.textContent = data.analysis_status || "READY";
+        statusTag.style.color = statusColor(data.analysis_status);
+      }
+      const bias = data.overall_bias || "NEUTRAL";
+      const biasPill = el("brain-bias-pill");
+      if (biasPill) {
+        biasPill.textContent = bias;
+        biasPill.className = `consensus-signal-pill ${bias.toLowerCase()}`;
+      }
+      const conviction = el("brain-conviction-pill");
+      if (conviction) conviction.textContent = `Conviction: ${num(data.conviction_strength).toFixed(1)}%`;
+      const tier = el("brain-tier-pill");
+      if (tier) {
+        tier.textContent = `${data.completeness_tier || "\u2014"} (${num(data.completeness_score).toFixed(0)}%)`;
+        tier.style.color = data.completeness_tier === "COMPLETE" ? "var(--pos)" : data.completeness_tier === "PARTIAL" ? "#facc15" : "var(--neg)";
+      }
+      if (execText) execText.textContent = data.executive_summary || "";
+      const mkt = data.market_summary || {};
+      const price = el("brain-mkt-price");
+      if (price) price.textContent = mkt.current_price !== void 0 && mkt.current_price !== null ? num(mkt.current_price).toLocaleString(void 0, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "\u2014";
+      const change = el("brain-mkt-change");
+      if (change) {
+        const pct = num(mkt.price_change_pct);
+        change.textContent = `${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%`;
+        change.className = pct >= 0 ? "brain-sub-val text-green" : "brain-sub-val text-red";
+      }
+      const atr = el("brain-mkt-atr");
+      if (atr) atr.textContent = `${num(mkt.volatility_atr).toFixed(2)} (${num(mkt.volatility_pct).toFixed(2)}%)`;
+      const regime = el("brain-mkt-regime");
+      if (regime) regime.textContent = mkt.trend_regime || "\u2014";
+      const ag = data.agent_summary || {};
+      const agTally = ag.tally || {};
+      const setText = (id, text) => {
+        const node = el(id);
+        if (node) node.textContent = text;
+      };
+      setText("brain-agent-leading", ag.leading_signal || "\u2014");
+      setText("brain-agent-bull", String(num(agTally.BULLISH)));
+      setText("brain-agent-neut", String(num(agTally.NEUTRAL)));
+      setText("brain-agent-bear", String(num(agTally.BEARISH)));
+      setText("brain-agent-conf", `${num(ag.average_confidence).toFixed(0)}%`);
+      const st = data.strategy_summary || {};
+      setText("brain-strat-setups-tag", `${num(st.setups_found)} SETUPS`);
+      setText("brain-strat-active-count", `${num(st.setups_found)} / ${num(st.strategies_evaluated)}`);
+      setText("brain-strat-bull", String(num(st.bullish_setups)));
+      setText("brain-strat-bear", String(num(st.bearish_setups)));
+      const activeList = el("brain-strat-active-list");
+      if (activeList) {
+        const names = Array.isArray(st.active_strategies) ? st.active_strategies : [];
+        activeList.innerHTML = names.length ? names.map((n) => `<span class="strat-eval-badge strat-badge-bullish" style="font-size:9.5px;">\u2713 ${esc(n)}</span>`).join("") : `<span style="font-size:10.5px;color:var(--text-4);font-style:italic;">No active strategy setups detected</span>`;
+      }
+      const cs = data.consensus_summary || {};
+      setText("brain-cons-status-tag", cs.status || "\u2014");
+      const consSig = el("brain-cons-sig");
+      if (consSig) {
+        consSig.textContent = cs.signal || "\u2014";
+        consSig.className = cs.signal === "BULLISH" ? "brain-sub-val text-green" : cs.signal === "BEARISH" ? "brain-sub-val text-red" : cs.signal === "MIXED" ? "brain-sub-val text-yellow" : "brain-sub-val text-blue";
+      }
+      setText("brain-cons-strength", `${num(cs.strength).toFixed(1)}%`);
+      setText("brain-cons-agree", `${num(cs.agreement_score).toFixed(0)}% (${cs.agreement_level || "\u2014"})`);
+      setText("brain-market-view-line", cs.market_view || "");
+      const evidence = el("brain-evidence-section");
+      if (evidence) {
+        const supporting = data.key_supporting_evidence || [];
+        const conflicting = data.key_conflicting_evidence || [];
+        let html = "";
+        if (conflicting.length) {
+          html += `<div class="consensus-section-header" style="color:#facc15;"><i class="fa-solid fa-triangle-exclamation"></i><span>Key Conflicting Evidence (${conflicting.length})</span></div>
+                    <div class="evidence-grid">${conflicting.map((e) => renderEvidenceCard(e, "conflict")).join("")}</div>`;
+        }
+        if (supporting.length) {
+          html += `<div class="consensus-section-header" style="color:var(--pos);margin-top:4px;"><i class="fa-solid fa-shield-check"></i><span>Key Supporting Evidence (${supporting.length})</span></div>
+                    <div class="evidence-grid">${supporting.map((e) => renderEvidenceCard(e, "supporting")).join("")}</div>`;
+        }
+        evidence.innerHTML = html;
+      }
+      const diag = data.diagnostics || {};
+      setText("brain-diag-latency", `${num(diag.total_pipeline_ms).toFixed(1)} ms`);
+      setText("brain-diag-comp", `${num(data.completeness_score).toFixed(1)}%`);
     } catch (err) {
-      console.error("[BrainModal] Error:", err);
+      if (execText) execText.innerHTML = `<span style="color:var(--neg);">Analysis failed: ${esc(errorText(err))}</span>`;
+      if (statusTag) {
+        statusTag.textContent = "FAILED";
+        statusTag.style.color = "var(--neg)";
+      }
     }
   }
   function openRiskModal() {
-    const modal = getElement("risk-guard-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshRiskModal();
+    if (show("risk-guard-modal")) refreshRiskModal();
   }
   function closeRiskModal() {
-    const modal = getElement("risk-guard-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("risk-guard-modal");
   }
+  var RISK_LEVEL_COLOR = { VERY_LOW: "var(--pos)", LOW: "var(--pos)", MODERATE: "#F59E0B", HIGH: "#F97316", CRITICAL: "var(--neg)" };
   async function refreshRiskModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
+    const { asset, tf } = activeContext();
+    const sub = el("risk-modal-subtitle");
+    if (sub) sub.textContent = `Analysis Quality & Market Safety Audit on ${asset} (${tf})`;
+    const heroSummary = el("risk-hero-summary");
+    const statusTag = el("risk-status-tag");
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Evaluating volatility, conflict, consensus, quality and data...`;
     try {
       const data = await aiService.evaluateRisk(asset, tf);
-      safeText(getElement("risk-score-value"), `${data.risk_score.toFixed(1)}`);
-      safeText(getElement("risk-level-badge"), data.risk_level);
-      const lat = data.diagnostics?.execution_time_ms ?? data.execution_time_ms ?? 0;
-      safeText(getElement("risk-time-badge"), `${lat.toFixed(1)} ms`);
-      const levelBadge = getElement("risk-level-badge");
-      if (levelBadge) {
-        levelBadge.className = `risk-badge ${data.risk_level === "LOW" ? "badge-green" : data.risk_level === "MODERATE" ? "badge-yellow" : "badge-red"}`;
+      if (statusTag) {
+        statusTag.textContent = data.status || "READY";
+        statusTag.style.color = statusColor(data.status);
       }
+      const lvl = data.risk_level || "MODERATE";
+      const pill = el("risk-level-pill");
+      if (pill) {
+        pill.textContent = lvl.replace(/_/g, " ");
+        pill.className = `risk-level-pill ${lvl.toLowerCase().replace(/_/g, "-")}`;
+      }
+      const title = el("risk-hero-title");
+      if (title) {
+        title.textContent = lvl === "LOW" || lvl === "VERY_LOW" ? "Controlled Risk Profile" : lvl === "MODERATE" ? "Standard Market Volatility" : lvl === "HIGH" ? "Elevated Risk Warning" : "CRITICAL RISK ALERT";
+      }
+      if (heroSummary) heroSummary.textContent = data.summary || "";
+      const score = num(data.risk_score);
+      const scoreEl = el("risk-score-number");
+      if (scoreEl) scoreEl.innerHTML = scoreHtml(score);
+      const bar = el("risk-meter-bar-fill");
+      if (bar) {
+        bar.style.width = `${Math.min(100, Math.max(5, score))}%`;
+        bar.style.background = RISK_LEVEL_COLOR[lvl] || "var(--neg)";
+      }
+      const grid = el("risk-dimensions-grid");
+      if (grid && data.dimensions) {
+        const icons = {
+          volatility: "fa-solid fa-wave-square",
+          signal_conflict: "fa-solid fa-code-compare",
+          consensus: "fa-solid fa-brain",
+          analysis_quality: "fa-solid fa-shield-halved",
+          data_quality: "fa-solid fa-database"
+        };
+        grid.innerHTML = Object.keys(icons).map((key) => {
+          const d = data.dimensions[key];
+          if (!d) return "";
+          const color = RISK_LEVEL_COLOR[d.level] || "var(--neg)";
+          return `
+                    <div class="risk-dim-card">
+                        <div class="risk-dim-header">
+                            <div class="risk-dim-title"><i class="${icons[key]}" style="color:${color};"></i><span>${esc(d.name)}</span></div>
+                            <span class="risk-dim-score" style="color:${color};">${num(d.score).toFixed(0)}/100</span>
+                        </div>
+                        <div class="risk-dim-summary">${esc(d.summary)}</div>
+                    </div>`;
+        }).join("");
+      }
+      const riskFactors = data.risk_factors || [];
+      const rfCount = el("risk-factors-count");
+      if (rfCount) rfCount.textContent = String(riskFactors.length);
+      const rfList = el("risk-factors-list");
+      if (rfList) rfList.innerHTML = factorList(
+        riskFactors,
+        "risk-factor-item",
+        "risk-factor-title",
+        "fa-solid fa-triangle-exclamation",
+        "\u2713 No active elevated risk warnings detected in current state."
+      );
+      const safety = data.safety_factors || [];
+      const sfCount = el("safety-factors-count");
+      if (sfCount) sfCount.textContent = String(safety.length);
+      const sfList = el("safety-factors-list");
+      if (sfList) sfList.innerHTML = factorList(
+        safety,
+        "safety-factor-item",
+        "safety-factor-title",
+        "fa-solid fa-circle-check",
+        "No specific stabilizing conditions identified."
+      );
+      const diag = data.diagnostics || {};
+      const latency = el("risk-diag-latency");
+      if (latency) latency.textContent = `${num(diag.evaluation_latency_ms).toFixed(1)} ms`;
+      const dims = el("risk-diag-dims");
+      if (dims) dims.textContent = `${num(diag.dimensions_evaluated)}/5`;
     } catch (err) {
-      console.error("[RiskModal] Error:", err);
+      if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Risk audit failed: ${esc(errorText(err))}</span>`;
+      if (statusTag) {
+        statusTag.textContent = "FAILED";
+        statusTag.style.color = "var(--neg)";
+      }
     }
   }
   function openOpportunityModal() {
-    const modal = getElement("opportunity-eval-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshOpportunityModal();
+    if (show("opportunity-eval-modal")) refreshOpportunityModal();
   }
   function closeOpportunityModal() {
-    const modal = getElement("opportunity-eval-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("opportunity-eval-modal");
   }
   async function refreshOpportunityModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
+    const { asset, tf } = activeContext();
+    const sub = el("opp-modal-subtitle");
+    if (sub) sub.textContent = `Multi-System Confluence & Setup Quality Assessment on ${asset} (${tf})`;
+    const heroSummary = el("opp-hero-summary");
+    const statusTag = el("opp-status-tag");
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Evaluating cross-pipeline confluence...`;
     try {
       const data = await aiService.evaluateOpportunity(asset, tf);
-      safeText(getElement("opp-score-value"), `${data.opportunity_score.toFixed(1)}`);
-      safeText(getElement("opp-level-badge"), data.opportunity_level);
-      const lat = data.diagnostics?.execution_time_ms ?? data.execution_time_ms ?? 0;
-      safeText(getElement("opp-time-badge"), `${lat.toFixed(1)} ms`);
+      if (statusTag) {
+        statusTag.textContent = data.status || "READY";
+        statusTag.style.color = statusColor(data.status);
+      }
+      const lvl = data.opportunity_level || "MODERATE";
+      const pill = el("opp-level-pill");
+      if (pill) {
+        pill.textContent = lvl.replace(/_/g, " ");
+        pill.className = `opp-level-pill ${lvl.toLowerCase().replace(/_/g, "-")}`;
+      }
+      const bias = data.leading_bias || "NEUTRAL";
+      const biasPill = el("opp-bias-pill");
+      if (biasPill) {
+        biasPill.textContent = bias;
+        biasPill.className = `opp-bias-pill ${bias.toLowerCase()}`;
+      }
+      const title = el("opp-hero-title");
+      if (title) {
+        title.textContent = lvl === "VERY_HIGH" ? "Exceptional Multi-System Confluence" : lvl === "HIGH" ? "Strong Analytical Confluence" : lvl === "MODERATE" ? "Balanced Setup Quality" : lvl === "LOW" ? "Weak Confluence / High Friction" : "Minimal Trade Setup Opportunity";
+      }
+      if (heroSummary) heroSummary.textContent = data.summary || "";
+      const score = num(data.opportunity_score);
+      const scoreEl = el("opp-score-number");
+      if (scoreEl) scoreEl.innerHTML = scoreHtml(score);
+      const bar = el("opp-meter-bar-fill");
+      if (bar) {
+        bar.style.width = `${Math.min(100, Math.max(5, score))}%`;
+        bar.style.background = lvl === "VERY_HIGH" || lvl === "HIGH" ? "var(--pos)" : lvl === "MODERATE" ? "#F59E0B" : lvl === "LOW" ? "#F97316" : "var(--neg)";
+      }
+      const grid = el("opp-dimensions-grid");
+      if (grid && data.dimensions) {
+        const icons = {
+          consensus_quality: "fa-solid fa-brain",
+          strategy_confluence: "fa-solid fa-layer-group",
+          agent_harmony: "fa-solid fa-robot",
+          risk_headroom: "fa-solid fa-shield-halved",
+          analysis_completeness: "fa-solid fa-circle-check"
+        };
+        grid.innerHTML = Object.keys(icons).map((key) => {
+          const d = data.dimensions[key];
+          if (!d) return "";
+          const s = num(d.score);
+          const color = s >= 70 ? "var(--pos)" : s >= 50 ? "#06b6d4" : s >= 35 ? "#F59E0B" : "var(--neg)";
+          return `
+                    <div class="opp-dim-card">
+                        <div class="opp-dim-header">
+                            <div class="opp-dim-title"><i class="${icons[key]}" style="color:${color};"></i><span>${esc(d.name)}</span></div>
+                            <span class="opp-dim-score" style="color:${color};">${s.toFixed(0)}/100</span>
+                        </div>
+                        <div class="opp-dim-summary">${esc(d.summary)}</div>
+                    </div>`;
+        }).join("");
+      }
+      const strengths = data.strength_factors || [];
+      const stCount = el("opp-strength-count");
+      if (stCount) stCount.textContent = String(strengths.length);
+      const stList = el("opp-strength-list");
+      if (stList) stList.innerHTML = factorList(
+        strengths,
+        "opp-factor-item booster",
+        "opp-factor-title booster",
+        "fa-solid fa-circle-check",
+        "No strong confluence boosters detected in current market state."
+      );
+      const weaknesses = data.weakness_factors || [];
+      const wkCount = el("opp-weakness-count");
+      if (wkCount) wkCount.textContent = String(weaknesses.length);
+      const wkList = el("opp-weakness-list");
+      if (wkList) wkList.innerHTML = factorList(
+        weaknesses,
+        "opp-factor-item headwind",
+        "opp-factor-title headwind",
+        "fa-solid fa-triangle-exclamation",
+        "\u2713 Zero significant headwinds or frictions identified."
+      );
+      const diag = data.diagnostics || {};
+      const latency = el("opp-diag-latency");
+      if (latency) latency.textContent = `${num(diag.evaluation_latency_ms).toFixed(2)} ms`;
+      const totalEl = el("opp-diag-total");
+      if (totalEl) totalEl.textContent = `${num(diag.total_pipeline_ms).toFixed(1)} ms`;
+      const dims = el("opp-diag-dims");
+      if (dims) dims.textContent = `${num(diag.dimensions_evaluated)}/5`;
     } catch (err) {
-      console.error("[OpportunityModal] Error:", err);
+      if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Opportunity evaluation failed: ${esc(errorText(err))}</span>`;
+      if (statusTag) {
+        statusTag.textContent = "FAILED";
+        statusTag.style.color = "var(--neg)";
+      }
     }
   }
   function openDecisionModal() {
-    const modal = getElement("decision-inspect-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshDecisionModal();
+    if (show("decision-eval-modal")) refreshDecisionModal();
   }
   function closeDecisionModal() {
-    const modal = getElement("decision-inspect-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("decision-eval-modal");
+  }
+  var STANCE_TITLE = {
+    BULLISH: "Authoritative Bullish Market Stance",
+    BEARISH: "Authoritative Bearish Market Stance",
+    NEUTRAL: "Consolidation Equilibrium (Neutral)",
+    MIXED: "Polar Volatility Deadlock (Mixed)",
+    NO_CLEAR_DECISION: "Ambiguous Evidence (No Clear Stance)"
+  };
+  function clarityColor(clarity) {
+    return clarity === "CLEAR" ? "var(--pos)" : clarity === "MODERATE" ? "#38bdf8" : clarity === "UNCLEAR" ? "#f59e0b" : "var(--neg)";
+  }
+  function stanceBarColor(stance) {
+    return stance === "BULLISH" ? "var(--pos)" : stance === "BEARISH" ? "var(--neg)" : stance === "NEUTRAL" ? "#F59E0B" : "#A855F7";
+  }
+  function renderInputQuad(prefix, inSum) {
+    const set = (id, text) => {
+      const node = el(`${prefix}-${id}`);
+      if (node) node.textContent = text;
+    };
+    set("consensus", inSum.consensus_signal || "--");
+    set("consensus-sub", `Strength: ${num(inSum.consensus_strength).toFixed(0)} | Agreement: ${num(inSum.agreement_score).toFixed(0)}%`);
+    set("risk", inSum.risk_level || "--");
+    set("risk-sub", `Score: ${num(inSum.risk_score).toFixed(1)}/100`);
+    set("opp", String(inSum.opportunity_level || "--").replace(/_/g, " "));
+    set("opp-sub", `Confluence: ${num(inSum.opportunity_score).toFixed(1)}/100`);
+    set("pipeline", `${num(inSum.completeness_score).toFixed(0)}%`);
+    set("pipeline-sub", `Tier: ${inSum.completeness_tier || "--"}`);
   }
   async function refreshDecisionModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
+    const { asset, tf } = activeContext();
+    const sub = el("decision-modal-subtitle");
+    if (sub) sub.textContent = `Evidence-Based Analytical Market Stance Synthesis on ${asset} (${tf})`;
+    const heroSummary = el("decision-hero-summary");
+    const statusTag = el("decision-status-tag");
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Synthesizing market stance across consensus, opportunity and risk...`;
     try {
       const data = await aiService.evaluateDecision(asset, tf);
-      const stance = data.market_stance || data.stance || "NEUTRAL";
-      const conf = data.decision_confidence !== void 0 ? data.decision_confidence : data.confidence || 0;
-      safeText(getElement("decision-stance-badge"), stance);
-      safeText(getElement("decision-confidence-val"), `${conf.toFixed(1)}%`);
-      const lat = data.diagnostics?.execution_time_ms ?? data.execution_time_ms ?? 0;
-      safeText(getElement("decision-time-badge"), `${lat.toFixed(1)} ms`);
+      if (statusTag) {
+        statusTag.textContent = data.status || "READY";
+        statusTag.style.color = statusColor(data.status);
+      }
+      const stance = data.decision || "NEUTRAL";
+      const badge = el("decision-stance-badge");
+      if (badge) {
+        badge.textContent = stance.replace(/_/g, " ");
+        badge.className = `decision-stance-badge ${stance.toLowerCase().replace(/_/g, "-")}`;
+      }
+      const clarity = data.decision_clarity || "\u2014";
+      const clarityTag = el("decision-clarity-tag");
+      if (clarityTag) {
+        clarityTag.textContent = clarity;
+        clarityTag.style.color = clarityColor(clarity);
+      }
+      const title = el("decision-hero-title");
+      if (title) title.textContent = STANCE_TITLE[stance] || "Insufficient Market Intelligence";
+      if (heroSummary) heroSummary.textContent = data.summary || "";
+      const conf = num(data.decision_confidence);
+      const confEl = el("decision-confidence-number");
+      if (confEl) confEl.innerHTML = scoreHtml(conf);
+      const bar = el("decision-meter-bar-fill");
+      if (bar) {
+        bar.style.width = `${Math.min(100, Math.max(5, conf))}%`;
+        bar.style.background = stanceBarColor(stance);
+      }
+      renderInputQuad("dec-in", data.input_summary || {});
+      const primary = data.primary_evidence || [];
+      const supporting = data.supporting_evidence || [];
+      const evCount = el("decision-evidence-count");
+      if (evCount) evCount.textContent = String(primary.length + supporting.length);
+      const evList = el("decision-evidence-list");
+      if (evList) {
+        evList.innerHTML = primary.length + supporting.length === 0 ? `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No active evidence items detected.</div>` : primary.map((e) => `<div class="decision-evidence-card"><i class="fa-solid fa-circle-check text-green" style="margin-top:2px;"></i><span><strong>Primary:</strong> ${esc(e)}</span></div>`).join("") + supporting.map((e) => `<div class="decision-evidence-card" style="border-left-color:var(--cyan);background:rgba(6,182,212,0.04);"><i class="fa-solid fa-plus text-cyan" style="margin-top:2px;"></i><span><strong>Corroborating:</strong> ${esc(e)}</span></div>`).join("");
+      }
+      const constraints = data.constraints || [];
+      const conflicts = data.conflicts || [];
+      const cCount = el("decision-constraints-count");
+      if (cCount) cCount.textContent = String(constraints.length + conflicts.length);
+      const cList = el("decision-constraints-list");
+      if (cList) {
+        cList.innerHTML = constraints.length + conflicts.length === 0 ? `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">\u2713 Zero active analytical constraints or conflicts detected.</div>` : conflicts.map((f) => `<div class="decision-conflict-card"><i class="fa-solid fa-triangle-exclamation text-red" style="margin-top:2px;"></i><span><strong>Conflict:</strong> ${esc(f)}</span></div>`).join("") + constraints.map((c) => `<div class="decision-constraint-card"><i class="fa-solid fa-shield-halved text-yellow" style="margin-top:2px;"></i><span><strong>Constraint:</strong> ${esc(c)}</span></div>`).join("");
+      }
+      const diag = data.diagnostics || {};
+      const latency = el("dec-diag-latency");
+      if (latency) latency.textContent = `${num(diag.decision_latency_ms).toFixed(2)} ms`;
+      const totalEl = el("dec-diag-total");
+      if (totalEl) totalEl.textContent = `${num(diag.total_latency_ms).toFixed(1)} ms`;
+      const diagClarity = el("dec-diag-clarity");
+      if (diagClarity) diagClarity.textContent = clarity;
     } catch (err) {
-      console.error("[DecisionModal] Error:", err);
+      if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Decision synthesis failed: ${esc(errorText(err))}</span>`;
+      if (statusTag) {
+        statusTag.textContent = "FAILED";
+        statusTag.style.color = "var(--neg)";
+      }
     }
   }
   function openExplainModal() {
-    const modal = getElement("explain-eval-modal");
-    if (!modal) return;
-    modal.classList.remove("hidden");
-    refreshExplainModal();
+    if (show("explain-eval-modal")) refreshExplainModal();
   }
   function closeExplainModal() {
-    const modal = getElement("explain-eval-modal");
-    if (modal) modal.classList.add("hidden");
+    hide("explain-eval-modal");
   }
   async function refreshExplainModal() {
-    const asset = store.get("currentAsset") || "BTC-USD";
-    const tf = store.get("currentTimeframe") || "1d";
+    const { asset, tf } = activeContext();
+    const sub = el("explain-modal-subtitle");
+    if (sub) sub.textContent = `Institutional Explainability & Traceable Intelligence on ${asset} (${tf})`;
+    const headline = el("explain-headline");
+    const statusTag = el("explain-status-tag");
+    if (headline) headline.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Synthesizing traceable insights...`;
     try {
       const data = await aiService.evaluateExplanation(asset, tf);
-      const stance = data.input_summary?.market_stance || data.stance || "NEUTRAL";
-      safeText(getElement("explain-stance-badge"), stance);
-      safeText(getElement("explain-headline"), data.headline);
-      const lat = data.diagnostics?.execution_time_ms ?? data.execution_time_ms ?? 0;
-      safeText(getElement("explain-time-badge"), `${lat.toFixed(1)} ms`);
+      if (statusTag) {
+        statusTag.textContent = data.status || "READY";
+        statusTag.style.color = statusColor(data.status, "#22d3ee");
+      }
+      const stance = data.market_stance || "NEUTRAL";
+      const badge = el("explain-stance-badge");
+      if (badge) {
+        badge.textContent = stance.replace(/_/g, " ");
+        badge.className = `explain-stance-badge ${stance.toLowerCase().replace(/_/g, "-")}`;
+      }
+      const clarity = data.decision_clarity || "\u2014";
+      const clarityTag = el("explain-clarity-tag");
+      if (clarityTag) {
+        clarityTag.textContent = clarity;
+        clarityTag.style.color = clarityColor(clarity);
+      }
+      const title = el("explain-hero-title");
+      if (title) title.textContent = STANCE_TITLE[stance] ? STANCE_TITLE[stance].replace("Market Stance", "Explanation") : "Insufficient Market Intelligence";
+      if (headline) headline.textContent = data.headline || "";
+      const thesis = el("explain-thesis-list");
+      if (thesis) {
+        const why = data.why || [];
+        thesis.innerHTML = why.length ? why.map((w2) => `<li>${esc(w2)}</li>`).join("") : `<li>No thesis items were produced for this analysis.</li>`;
+      }
+      const conf = num(data.decision_confidence);
+      const confEl = el("explain-confidence-number");
+      if (confEl) confEl.innerHTML = scoreHtml(conf);
+      const bar = el("explain-meter-bar-fill");
+      if (bar) {
+        bar.style.width = `${Math.min(100, Math.max(5, conf))}%`;
+        bar.style.background = stanceBarColor(stance);
+      }
+      renderInputQuad("exp-in", data.input_summary || {});
+      const primary = data.primary_evidence || [];
+      const supporting = data.supporting_evidence || [];
+      const all = [...primary, ...supporting];
+      const evCount = el("explain-evidence-count");
+      if (evCount) evCount.textContent = String(all.length);
+      const evList = el("explain-evidence-list");
+      if (evList) {
+        evList.innerHTML = all.length === 0 ? `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No corroborating evidence items detected.</div>` : all.map((item) => {
+          const isPrimary = primary.includes(item);
+          const border = isPrimary ? "var(--pos)" : "var(--cyan)";
+          const tint = isPrimary ? "rgba(0, 230, 138, 0.04)" : "rgba(6, 182, 212, 0.04)";
+          return `
+                    <div class="explain-evidence-card" style="border-left-color:${border};background:${tint};">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <i class="fa-solid ${isPrimary ? "fa-circle-check text-green" : "fa-plus text-cyan"}"></i>
+                                <span style="font-weight:700;font-size:10px;text-transform:uppercase;color:var(--text-1);">${isPrimary ? "PRIMARY EVIDENCE" : "SUPPORTING"}</span>
+                            </div>
+                            <span class="explain-source-badge">${esc(String(item.source || "UNKNOWN").replace(/_/g, " "))}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(item.message)}</div>
+                        <div style="display:flex;align-items:center;gap:8px;font-size:9.5px;color:var(--text-4);font-family:var(--font-mono);">
+                            <span>Tag: ${esc(String(item.category || "").replace(/_/g, " "))}</span>
+                            ${item.direction ? `<span>Dir: ${esc(item.direction)}</span>` : ""}
+                        </div>
+                    </div>`;
+        }).join("");
+      }
+      const conflicts = data.conflicts || [];
+      const cfCount = el("explain-conflicts-count");
+      if (cfCount) cfCount.textContent = String(conflicts.length);
+      const cfList = el("explain-conflicts-list");
+      if (cfList) {
+        cfList.innerHTML = conflicts.length === 0 ? `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">\u2713 Zero model conflicts or cross-system divergences detected.</div>` : conflicts.map((c) => {
+          const subs = (c.subsystems || []).map((s) => `<span class="explain-source-badge" style="background:rgba(239,68,68,0.1);color:#fca5a5;border-color:rgba(239,68,68,0.3);">${esc(String(s).replace(/_/g, " "))}</span>`).join(" ");
+          return `
+                    <div class="explain-conflict-card">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;"><i class="fa-solid fa-triangle-exclamation text-red"></i><strong style="font-size:10.5px;color:#fca5a5;">${esc(c.title || "Conflict")}</strong></div>
+                            <span class="explain-source-badge" style="color:var(--neg);">${esc(c.severity || "\u2014")}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(c.description)}</div>
+                        ${subs ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:2px;">${subs}</div>` : ""}
+                    </div>`;
+        }).join("");
+      }
+      const constraints = data.risk_constraints || [];
+      const uncertainties = data.uncertainties || [];
+      const rkCount = el("explain-risks-count");
+      if (rkCount) rkCount.textContent = String(constraints.length + uncertainties.length);
+      const rkList = el("explain-risks-list");
+      if (rkList) {
+        rkList.innerHTML = constraints.length + uncertainties.length === 0 ? `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">\u2713 No active risk constraints or uncertainties limiting analysis.</div>` : constraints.map((rc) => `
+                    <div class="explain-uncertainty-card" style="border-left-color:#EAB308;">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;"><i class="fa-solid fa-shield-halved text-yellow"></i><strong style="font-size:10.5px;color:#fde047;">Risk Constraint</strong></div>
+                            <span class="explain-source-badge">${esc(String(rc.source || "RISK_GUARD").replace(/_/g, " "))}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(rc.message)}</div>
+                    </div>`).join("") + uncertainties.map((un) => `
+                    <div class="explain-uncertainty-card" style="border-left-color:#A855F7;background:rgba(168,85,247,0.04);">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;"><i class="fa-solid fa-circle-question text-purple"></i><strong style="font-size:10.5px;color:#d8b4fe;">${esc(un.category ? String(un.category).replace(/_/g, " ") : "Uncertainty")}</strong></div>
+                            <span class="explain-source-badge" style="color:#d8b4fe;">${esc(String(un.source || "ORBIT_BRAIN").replace(/_/g, " "))}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(un.description)}</div>
+                    </div>`).join("");
+      }
+      const diag = data.diagnostics || {};
+      const set = (id, text) => {
+        const node = el(id);
+        if (node) node.textContent = text;
+      };
+      set("exp-diag-latency", `${num(diag.explain_latency_ms).toFixed(2)} ms`);
+      set("exp-diag-dec-latency", `${num(diag.decision_latency_ms).toFixed(2)} ms`);
+      set("exp-diag-total", `${num(diag.total_latency_ms).toFixed(1)} ms`);
     } catch (err) {
-      console.error("[ExplainModal] Error:", err);
+      if (headline) headline.innerHTML = `<span style="color:var(--neg);">Explainability synthesis failed: ${esc(errorText(err))}</span>`;
+      if (statusTag) {
+        statusTag.textContent = "FAILED";
+        statusTag.style.color = "var(--neg)";
+      }
     }
   }
   function initModalKeyboardListeners() {
@@ -2717,6 +3777,9 @@
   // src/ui/copilotController.ts
   var _copilotConversationId = null;
   var _copilotIsLoading = false;
+  function errorText2(err) {
+    return err instanceof Error ? err.message : String(err);
+  }
   function openCopilotModal() {
     const modal = getElement("orbit-copilot-modal");
     if (!modal) return;
@@ -2728,14 +3791,10 @@
     const welcomeSym = getElement("copilot-welcome-symbol");
     if (welcomeSym) welcomeSym.textContent = asset;
     refreshCopilotContext(asset, tf);
-    setTimeout(() => {
-      const input = getElement("copilot-chat-input");
-      if (input) input.focus();
-    }, 150);
+    setTimeout(() => getElement("copilot-chat-input")?.focus(), 150);
   }
   function closeCopilotModal() {
-    const modal = getElement("orbit-copilot-modal");
-    if (modal) modal.classList.add("hidden");
+    getElement("orbit-copilot-modal")?.classList.add("hidden");
   }
   async function refreshCopilotContext(asset, tf) {
     const symbol = asset || store.get("currentAsset") || "BTC-USD";
@@ -2744,17 +3803,17 @@
       const d = await aiService.getCopilotContext(symbol, timeframe);
       const stanceEl = getElement("copilot-tel-stance");
       if (stanceEl) {
-        stanceEl.textContent = d.decision_stance;
-        stanceEl.className = `copilot-stance-tag ${(d.decision_stance || "").toLowerCase().replace(/_/g, "-")}`;
+        stanceEl.textContent = d.market_stance;
+        stanceEl.className = `copilot-stance-tag ${(d.market_stance || "").toLowerCase().replace(/_/g, "-")}`;
       }
       const confEl = getElement("copilot-tel-confidence");
-      if (confEl) confEl.textContent = `${(d.confidence || 0).toFixed(1)}%`;
+      if (confEl) confEl.textContent = `${Number(d.confidence || 0).toFixed(1)}%`;
       const riskEl = getElement("copilot-tel-risk");
-      if (riskEl) riskEl.textContent = `${d.risk_level} (${(d.risk_score || 0).toFixed(0)})`;
+      if (riskEl) riskEl.textContent = `${d.risk_level} (${Number(d.risk_score || 0).toFixed(0)})`;
       const oppEl = getElement("copilot-tel-opportunity");
-      if (oppEl) oppEl.textContent = `${(d.opportunity_score || 0).toFixed(0)}/100`;
+      if (oppEl) oppEl.textContent = `${Number(d.opportunity_score || 0).toFixed(0)}/100`;
     } catch (e) {
-      console.warn("[Copilot] Error loading context telemetry:", e);
+      console.warn("[Copilot] Context telemetry unavailable:", e);
     }
   }
   function askCopilotPreset(query) {
@@ -2765,6 +3824,10 @@
     }
   }
   function clearCopilotChat() {
+    if (_copilotConversationId) {
+      aiService.resetCopilotSession(_copilotConversationId).catch(() => {
+      });
+    }
     _copilotConversationId = null;
     const stream = getElement("copilot-chat-stream");
     const asset = store.get("currentAsset") || "BTC-USD";
@@ -2779,8 +3842,7 @@
                 <div class="copilot-msg-body">
                     Conversation reset. I am ready to answer questions about the active analysis for <strong>${esc(asset)}</strong>.
                 </div>
-            </div>
-        `;
+            </div>`;
     }
   }
   async function sendCopilotMessage() {
@@ -2802,16 +3864,12 @@
                 <strong>You</strong>
                 <span class="copilot-msg-time">${(/* @__PURE__ */ new Date()).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
             </div>
-            <div class="copilot-msg-body">${esc(text)}</div>
-        `;
+            <div class="copilot-msg-body">${esc(text)}</div>`;
       stream.appendChild(userCard);
       const typingCard = document.createElement("div");
       typingCard.className = "copilot-typing-card";
       typingCard.id = "copilot-typing-indicator";
-      typingCard.innerHTML = `
-            <i class="fa-solid fa-circle-notch fa-spin"></i>
-            <span>ORBIT Copilot is reasoning over ${esc(asset)} analysis...</span>
-        `;
+      typingCard.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin"></i><span>ORBIT Copilot is reasoning over ${esc(asset)} analysis...</span>`;
       stream.appendChild(typingCard);
       stream.scrollTop = stream.scrollHeight;
     }
@@ -2823,31 +3881,27 @@
         message: text,
         symbol: asset,
         timeframe: tf,
-        session_id: _copilotConversationId || void 0
+        conversation_id: _copilotConversationId || void 0
       });
-      const indicator = getElement("copilot-typing-indicator");
-      if (indicator) indicator.remove();
-      _copilotConversationId = d.session_id;
-      const formattedAnswer = formatCopilotMarkdown(d.reply);
-      const asstCard = document.createElement("div");
-      asstCard.className = "copilot-msg-card copilot-assistant";
-      asstCard.innerHTML = `
+      getElement("copilot-typing-indicator")?.remove();
+      _copilotConversationId = d.conversation_id;
+      const card = document.createElement("div");
+      card.className = "copilot-msg-card copilot-assistant";
+      card.innerHTML = `
             <div class="copilot-msg-header">
                 <i class="fa-solid fa-robot text-green"></i>
                 <strong>ORBIT Copilot</strong>
                 <span class="copilot-symbol-pill" style="font-size:9.5px;padding:1px 6px;">${esc(d.symbol)}</span>
-                <span class="copilot-msg-time">${(d.latency_ms || 0).toFixed(0)} ms</span>
+                <span class="copilot-msg-time">${Number(d.latency_ms || 0).toFixed(0)} ms</span>
             </div>
-            <div class="copilot-msg-body">${formattedAnswer}</div>
-        `;
+            <div class="copilot-msg-body">${formatCopilotMarkdown(d.answer)}</div>`;
       if (stream) {
-        stream.appendChild(asstCard);
+        stream.appendChild(card);
         stream.scrollTop = stream.scrollHeight;
       }
     } catch (err) {
       console.error("[Copilot] Chat error:", err);
-      const indicator = getElement("copilot-typing-indicator");
-      if (indicator) indicator.remove();
+      getElement("copilot-typing-indicator")?.remove();
       if (stream) {
         const errCard = document.createElement("div");
         errCard.className = "copilot-msg-card copilot-assistant";
@@ -2856,8 +3910,7 @@
                     <i class="fa-solid fa-triangle-exclamation text-red"></i>
                     <strong>ORBIT Copilot</strong>
                 </div>
-                <div class="copilot-msg-body text-red">Failed to communicate with AI Copilot: ${esc(err.message)}</div>
-            `;
+                <div class="copilot-msg-body text-red">Failed to communicate with AI Copilot: ${esc(errorText2(err))}</div>`;
         stream.appendChild(errCard);
         stream.scrollTop = stream.scrollHeight;
       }
@@ -2868,40 +3921,26 @@
   }
   function syncCopilotBalance() {
     const balanceEl = getElement("copilot-account-balance");
-    const walletEl = getElement("wallet-balance");
-    const overviewEl = getElement("overview-balance");
-    if (balanceEl) {
-      if (walletEl && walletEl.textContent?.trim()) {
-        balanceEl.textContent = walletEl.textContent.replace("INR", "").trim();
-      } else if (overviewEl && overviewEl.textContent?.trim()) {
-        balanceEl.textContent = overviewEl.textContent.replace("INR", "").trim();
-      } else {
-        balanceEl.textContent = "\u20B910,00,000.00";
-      }
-    }
+    if (balanceEl) balanceEl.textContent = formatINRSafe(store.get("dashboardSummary")?.available_balance);
   }
   var _copilotPageSessionId = null;
   var _copilotPageIsLoading = false;
   var _copilotActiveAsset = "AAPL";
   var _copilotActiveMarket = "US Stocks";
   var _copilotActiveMode = "DETAILED";
-  var _copilotSearchTimer = null;
-  var _copilotLoadingInterval = null;
+  var _copilotSearchTimer;
+  var _copilotLoadingInterval;
   async function loadConversationsList() {
     const listEl = getElement("copilot-history-list");
     if (!listEl) return;
     try {
-      const res = await fetch("/api/chat/conversations?limit=40");
-      if (!res.ok) throw new Error("Failed to load conversations");
-      const json = await res.json();
-      const convs = json.data || [];
-      if (convs.length === 0) {
+      const convs = await aiService.listConversations(40);
+      if (!convs.length) {
         listEl.innerHTML = `
                 <div class="copilot-history-empty">
                     <i class="fa-regular fa-message" style="margin-bottom:6px;font-size:18px;opacity:0.5;"></i>
                     <p style="margin:0;">No previous analyses.</p>
-                </div>
-            `;
+                </div>`;
         return;
       }
       const now = /* @__PURE__ */ new Date();
@@ -2909,72 +3948,48 @@
       const yest = new Date(now);
       yest.setDate(yest.getDate() - 1);
       const yestStr = yest.toDateString();
-      const groups = {
-        today: [],
-        yesterday: [],
-        older: []
-      };
+      const groups = { today: [], yesterday: [], older: [] };
       convs.forEach((c) => {
-        const d = new Date(c.updated_at || c.created_at);
-        const dStr = d.toDateString();
-        if (dStr === todayStr) {
-          groups.today.push(c);
-        } else if (dStr === yestStr) {
-          groups.yesterday.push(c);
-        } else {
-          groups.older.push(c);
-        }
+        const dStr = new Date(c.updated_at || c.created_at).toDateString();
+        if (dStr === todayStr) groups.today.push(c);
+        else if (dStr === yestStr) groups.yesterday.push(c);
+        else groups.older.push(c);
       });
-      let html = "";
-      const renderGroup = (title, items) => {
-        if (!items || items.length === 0) return "";
+      const renderGroup = (title, items) => !items.length ? "" : `
+            <div class="copilot-history-group">
+                <div class="copilot-history-group-title">${title}</div>
+                ${items.map((c) => {
+        const sym = c.selected_asset || "ASSET";
+        const cleanTitle = esc(c.title || `${sym} Analysis`);
+        const id = esc(c.id);
         return `
-                <div class="copilot-history-group">
-                    <div class="copilot-history-group-title">${title}</div>
-                    ${items.map((c) => {
-          const isActive = c.id === _copilotPageSessionId;
-          const sym = c.selected_asset || "ASSET";
-          const cleanTitle = esc(c.title || `${sym} Analysis`);
-          return `
-                                <div class="copilot-history-item ${isActive ? "active" : ""}" onclick="selectConversation('${c.id}')" title="${cleanTitle}">
-                                    <div class="copilot-history-item-content">
-                                        <div class="copilot-history-title">${cleanTitle}</div>
-                                        <div class="copilot-history-meta">
-                                            <span class="copilot-history-badge">${esc(sym)}</span>
-                                            <span>${esc(c.selected_market || "Market")}</span>
-                                        </div>
-                                    </div>
-                                    <button class="copilot-history-delete-btn" onclick="deleteConversationClick(event, '${c.id}')" title="Delete conversation">
-                                        <i class="fa-solid fa-trash-can"></i>
-                                    </button>
-                                </div>
-                            `;
-        }).join("")}
-                </div>
-            `;
-      };
-      html += renderGroup("TODAY", groups.today);
-      html += renderGroup("YESTERDAY", groups.yesterday);
-      html += renderGroup("OLDER", groups.older);
-      listEl.innerHTML = html;
+                    <div class="copilot-history-item ${c.id === _copilotPageSessionId ? "active" : ""}" onclick="selectConversation('${id}')" title="${cleanTitle}">
+                        <div class="copilot-history-item-content">
+                            <div class="copilot-history-title">${cleanTitle}</div>
+                            <div class="copilot-history-meta">
+                                <span class="copilot-history-badge">${esc(sym)}</span>
+                                <span>${esc(c.selected_market || "Market")}</span>
+                            </div>
+                        </div>
+                        <button class="copilot-history-delete-btn" onclick="deleteConversationClick(event, '${id}')" title="Delete conversation">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </div>`;
+      }).join("")}
+            </div>`;
+      listEl.innerHTML = renderGroup("TODAY", groups.today) + renderGroup("YESTERDAY", groups.yesterday) + renderGroup("OLDER", groups.older);
     } catch (err) {
       console.warn("[Copilot] Error loading conversations:", err);
     }
   }
   async function selectConversation(convId) {
     if (!convId) return;
-    _copilotPageSessionId = convId;
     try {
-      const res = await fetch(`/api/chat/conversations/${convId}`);
-      if (!res.ok) throw new Error("Conversation not found");
-      const json = await res.json();
-      const conversation = json.data;
-      const messages = conversation.messages || [];
-      if (conversation.selected_asset) {
-        _copilotActiveAsset = conversation.selected_asset;
-      }
-      if (conversation.selected_market) {
-        _copilotActiveMarket = conversation.selected_market;
+      const detail = await aiService.getConversation(convId);
+      _copilotPageSessionId = detail.conversation.id;
+      if (detail.conversation.selected_asset) _copilotActiveAsset = detail.conversation.selected_asset;
+      if (detail.conversation.selected_market) {
+        _copilotActiveMarket = detail.conversation.selected_market;
         const mktSelect = getElement("copilot-market-select");
         if (mktSelect) mktSelect.value = _copilotActiveMarket;
       }
@@ -2982,29 +3997,26 @@
       const messagesBox = getElement("copilot-page-messages");
       if (messagesBox) {
         messagesBox.innerHTML = "";
-        if (messages.length > 0) {
-          messages.forEach((m) => {
-            const isUser = m.role === "user";
-            const card = document.createElement("div");
-            card.className = `copilot-page-msg-card ${isUser ? "user" : "orbit"}`;
-            const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "";
-            card.innerHTML = `
-                        <div class="copilot-page-msg-header">
-                            <i class="fa-solid ${isUser ? "fa-user" : "fa-robot text-emerald"}"></i>
-                            <strong>${isUser ? "You" : "ORBIT Copilot"}</strong>
-                            ${timeStr ? `<span>&bull; ${timeStr}</span>` : ""}
-                        </div>
-                        <div class="copilot-page-msg-body">${isUser ? esc(m.content) : formatCopilotMarkdown(m.content)}</div>
-                    `;
-            messagesBox.appendChild(card);
-          });
-          messagesBox.scrollTop = messagesBox.scrollHeight;
-        }
+        detail.messages.forEach((m) => {
+          const isUser = m.role === "user";
+          const card = document.createElement("div");
+          card.className = `copilot-page-msg-card ${isUser ? "user" : "orbit"}`;
+          const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "";
+          card.innerHTML = `
+                    <div class="copilot-page-msg-header">
+                        <i class="fa-solid ${isUser ? "fa-user" : "fa-robot text-emerald"}"></i>
+                        <strong>${isUser ? "You" : "ORBIT Copilot"}</strong>
+                        ${timeStr ? `<span>&bull; ${esc(timeStr)}</span>` : ""}
+                    </div>
+                    <div class="copilot-page-msg-body">${isUser ? esc(m.content) : formatCopilotMarkdown(m.content)}</div>`;
+          messagesBox.appendChild(card);
+        });
+        messagesBox.scrollTop = messagesBox.scrollHeight;
       }
       syncCopilotPageView();
       loadConversationsList();
     } catch (err) {
-      console.warn("Error selecting conversation:", err);
+      console.warn("[Copilot] Error selecting conversation:", err);
     }
   }
   function createNewAnalysis() {
@@ -3013,8 +4025,7 @@
     if (messagesBox) messagesBox.innerHTML = "";
     syncCopilotPageView();
     loadConversationsList();
-    const input = getElement("copilot-page-input");
-    if (input) input.focus();
+    getElement("copilot-page-input")?.focus();
   }
   function toggleCopilotSidebar() {
     const sidebar = document.querySelector(".copilot-history-sidebar");
@@ -3023,26 +4034,17 @@
     if (!sidebar || !container) return;
     const isCollapsed = sidebar.classList.toggle("collapsed");
     container.classList.toggle("sidebar-collapsed", isCollapsed);
-    if (openBtn) {
-      if (isCollapsed) {
-        openBtn.classList.remove("hidden");
-      } else {
-        openBtn.classList.add("hidden");
-      }
-    }
+    if (openBtn) openBtn.classList.toggle("hidden", !isCollapsed);
   }
   async function deleteConversationClick(event, convId) {
     if (event) event.stopPropagation();
     if (!convId) return;
     try {
-      await fetch(`/api/chat/conversations/${convId}`, { method: "DELETE" });
-      if (_copilotPageSessionId === convId) {
-        createNewAnalysis();
-      } else {
-        loadConversationsList();
-      }
+      await aiService.deleteConversation(convId);
+      if (_copilotPageSessionId === convId) createNewAnalysis();
+      else loadConversationsList();
     } catch (err) {
-      console.warn("Delete conversation error:", err);
+      console.warn("[Copilot] Delete conversation error:", err);
     }
   }
   function onCopilotMarketChange(marketVal) {
@@ -3056,11 +4058,11 @@
     const exchEl = getElement("copilot-active-asset-exchange");
     const symBadge = getElement("copilot-page-symbol");
     if (titleEl) titleEl.innerHTML = `${esc(sym)} &bull; <span>${esc(name || sym)}</span>`;
-    if (exchEl) exchEl.textContent = `${esc(market || _copilotActiveMarket)}`;
-    if (symBadge) symBadge.textContent = esc(sym);
+    if (exchEl) exchEl.textContent = market || _copilotActiveMarket;
+    if (symBadge) symBadge.textContent = sym;
   }
   function onAssetSearchInput(query) {
-    clearTimeout(_copilotSearchTimer);
+    window.clearTimeout(_copilotSearchTimer);
     const dropdown = getElement("copilot-search-dropdown");
     if (!dropdown) return;
     const q = query.trim();
@@ -3071,28 +4073,21 @@
     }
     dropdown.classList.remove("hidden");
     dropdown.innerHTML = `<div class="copilot-search-loading"><i class="fa-solid fa-spinner fa-spin"></i> Searching ${esc(_copilotActiveMarket)}...</div>`;
-    _copilotSearchTimer = setTimeout(async () => {
+    _copilotSearchTimer = window.setTimeout(async () => {
       try {
-        const url = `/api/market/search?q=${encodeURIComponent(q)}&market=${encodeURIComponent(_copilotActiveMarket)}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("Search failed");
-        const json = await res.json();
-        const results = json.data && json.data.results || json.results || (Array.isArray(json.data) ? json.data : []) || [];
-        if (results.length === 0) {
+        const results = await marketService.searchSymbols(q, _copilotActiveMarket);
+        if (!results.length) {
           dropdown.innerHTML = `<div class="copilot-search-empty">No matching assets found</div>`;
           return;
         }
-        dropdown.innerHTML = results.slice(0, 8).map(
-          (r) => `
-                <div class="copilot-search-item" onclick="selectAsset('${esc(r.symbol)}', '${esc(r.name)}', '${esc(r.exchange)}')">
+        dropdown.innerHTML = results.slice(0, 8).map((r) => `
+                <div class="copilot-search-item" onclick="selectAsset('${esc(r.symbol)}', '${esc(r.name)}', '${esc(r.exchange || "")}')">
                     <div class="copilot-search-item-left">
                         <span class="copilot-search-item-sym">${esc(r.symbol)}</span>
                         <span class="copilot-search-item-name">${esc(r.name)}</span>
                     </div>
-                    <div class="copilot-search-item-right">${esc(r.exchange || r.type)}</div>
-                </div>
-            `
-        ).join("");
+                    <div class="copilot-search-item-right">${esc(r.exchange || r.type || "")}</div>
+                </div>`).join("");
       } catch {
         dropdown.innerHTML = `<div class="copilot-search-empty text-ruby">Search temporarily unavailable</div>`;
       }
@@ -3102,25 +4097,16 @@
     _copilotActiveAsset = symbol.trim().toUpperCase();
     if (exchange) _copilotActiveMarket = exchange;
     updateActiveAssetBanner(_copilotActiveAsset, exchange || _copilotActiveMarket, name);
-    const dropdown = getElement("copilot-search-dropdown");
-    if (dropdown) dropdown.classList.add("hidden");
+    getElement("copilot-search-dropdown")?.classList.add("hidden");
     const searchInput = getElement("copilot-asset-search");
     if (searchInput) searchInput.value = "";
     syncCopilotPageView();
   }
   function setResponseMode(mode) {
     _copilotActiveMode = mode;
-    const btns = document.querySelectorAll(".copilot-mode-btn");
-    btns.forEach((b) => {
-      if (b.getAttribute("data-mode") === mode) {
-        b.classList.add("active");
-      } else {
-        b.classList.remove("active");
-      }
-    });
+    document.querySelectorAll(".copilot-mode-btn").forEach((b) => b.classList.toggle("active", b.getAttribute("data-mode") === mode));
   }
   async function syncCopilotPageView() {
-    const symBadge = getElement("copilot-page-symbol");
     const statusBadge = getElement("copilot-page-analysis-status");
     const stanceEl = getElement("copilot-page-stance");
     const confEl = getElement("copilot-page-confidence");
@@ -3131,53 +4117,49 @@
     syncCopilotBalance();
     const activeSym = _copilotActiveAsset || store.get("currentAsset") || "AAPL";
     _copilotActiveAsset = activeSym;
-    if (symBadge) symBadge.textContent = esc(activeSym);
+    const symBadge = getElement("copilot-page-symbol");
+    if (symBadge) symBadge.textContent = activeSym;
     try {
-      const tf = store.get("currentTimeframe") || "1d";
-      const d = await aiService.getCopilotContext(activeSym, tf);
+      const d = await aiService.getCopilotContext(activeSym, store.get("currentTimeframe") || "1d");
       if (statusBadge) {
         statusBadge.className = "copilot-status-badge live";
         statusBadge.innerHTML = '<span class="copilot-status-pulse"></span> Pipeline Live';
       }
       if (stanceEl) {
-        stanceEl.textContent = d.decision_stance || "NEUTRAL";
-        stanceEl.className = `copilot-metric-pill stance-${(d.decision_stance || "").toLowerCase()}`;
+        stanceEl.textContent = d.market_stance;
+        stanceEl.className = `copilot-metric-pill stance-${(d.market_stance || "").toLowerCase()}`;
       }
       if (confEl) confEl.textContent = `${Number(d.confidence || 0).toFixed(1)}%`;
       if (riskEl) {
-        riskEl.textContent = `${d.risk_level || "MODERATE"} (${Number(d.risk_score || 0).toFixed(0)})`;
+        riskEl.textContent = `${d.risk_level} (${Number(d.risk_score || 0).toFixed(0)})`;
         riskEl.className = `copilot-metric-pill risk-${(d.risk_level || "").toLowerCase()}`;
       }
       if (oppEl) {
         oppEl.textContent = `${Number(d.opportunity_score || 0).toFixed(0)}/100`;
         oppEl.className = `copilot-metric-pill opp-${(d.opportunity_level || "").toLowerCase()}`;
       }
-      if (setupsEl) {
-        const count = d.active_setups?.length || 0;
-        setupsEl.textContent = `${count} Active`;
-      }
+      if (setupsEl) setupsEl.textContent = d.clarity || "\u2014";
       if (messagesBox && messagesBox.childElementCount === 0) {
-        const welcomeCard = document.createElement("div");
-        welcomeCard.className = "copilot-page-msg-card orbit";
-        welcomeCard.innerHTML = `
+        const welcome = document.createElement("div");
+        welcome.className = "copilot-page-msg-card orbit";
+        welcome.innerHTML = `
                 <div class="copilot-page-msg-header">
                     <i class="fa-solid fa-robot text-emerald"></i>
                     <strong>ORBIT Copilot</strong>
-                    <span>&bull; ${activeSym} Context Active</span>
+                    <span>&bull; ${esc(activeSym)} Context Active</span>
                 </div>
                 <div class="copilot-page-msg-body">
-                    <p>Connected to <strong>${esc(activeSym)}</strong> in <strong>${esc(_copilotActiveMarket)}</strong> via Alpha Vantage and ORBIT analytical pipeline.</p>
-                    <p>Current Stance: <strong>${d.decision_stance}</strong> (${Number(d.confidence).toFixed(1)}% Confidence).<br>
-                    Analytical Risk is <strong>${d.risk_level}</strong> (${Number(d.risk_score).toFixed(1)}/100) and Opportunity is <strong>${Number(d.opportunity_score).toFixed(1)}/100</strong>.</p>
-                    <p>Ask any question about <strong>${esc(activeSym)}</strong> or choose a suggested question above.</p>
-                </div>
-            `;
-        messagesBox.appendChild(welcomeCard);
+                    <p>Connected to <strong>${esc(activeSym)}</strong> in <strong>${esc(_copilotActiveMarket)}</strong> through the ORBIT analysis pipeline.</p>
+                    <p>${esc(d.headline || "")}</p>
+                    <p>Current Stance: <strong>${esc(d.market_stance)}</strong> (${Number(d.confidence).toFixed(1)}% confidence).
+                    Risk is <strong>${esc(d.risk_level)}</strong> (${Number(d.risk_score).toFixed(1)}/100) and Opportunity is <strong>${Number(d.opportunity_score).toFixed(1)}/100</strong>.</p>
+                </div>`;
+        messagesBox.appendChild(welcome);
       }
-    } catch {
+    } catch (err) {
       if (statusBadge) {
         statusBadge.className = "copilot-status-badge not-available";
-        statusBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Ready';
+        statusBadge.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> ${esc(errorText2(err)).slice(0, 80) || "Unavailable"}`;
       }
     }
   }
@@ -3201,8 +4183,7 @@
                 <strong>You</strong>
                 <span>&bull; ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}</span>
             </div>
-            <div class="copilot-page-msg-body">${esc(message)}</div>
-        `;
+            <div class="copilot-page-msg-body">${esc(message)}</div>`;
       messagesBox.appendChild(userCard);
       messagesBox.scrollTop = messagesBox.scrollHeight;
     }
@@ -3212,52 +4193,51 @@
     if (errorBanner) errorBanner.classList.add("hidden");
     _copilotPageIsLoading = true;
     const stages = [
-      "Loading market data from Alpha Vantage...",
-      "Analyzing market context & indicators...",
+      "Loading market data...",
+      "Running agents & strategies...",
       "Evaluating risk guard & consensus...",
       "Generating ORBIT analytical view..."
     ];
     let stageIdx = 0;
     if (loadingText) loadingText.textContent = stages[0];
-    clearInterval(_copilotLoadingInterval);
-    _copilotLoadingInterval = setInterval(() => {
+    window.clearInterval(_copilotLoadingInterval);
+    _copilotLoadingInterval = window.setInterval(() => {
       stageIdx = (stageIdx + 1) % stages.length;
       if (loadingText) loadingText.textContent = stages[stageIdx];
     }, 1500);
     try {
-      const tf = store.get("currentTimeframe") || "1d";
       const d = await aiService.chatCopilot({
         message,
         symbol: activeSym,
-        timeframe: tf,
-        session_id: _copilotPageSessionId || void 0,
+        selected_asset: activeSym,
+        selected_market: _copilotActiveMarket,
+        timeframe: store.get("currentTimeframe") || "1d",
+        conversation_id: _copilotPageSessionId || void 0,
         response_mode: _copilotActiveMode
       });
-      clearInterval(_copilotLoadingInterval);
+      window.clearInterval(_copilotLoadingInterval);
       if (loadingBar) loadingBar.classList.add("hidden");
-      _copilotPageSessionId = d.session_id;
+      _copilotPageSessionId = d.conversation_id;
       if (messagesBox) {
-        const orbitCard = document.createElement("div");
-        orbitCard.className = "copilot-page-msg-card orbit";
-        const latencyTag = d.latency_ms ? `<span>&bull; ${d.latency_ms}ms</span>` : "";
-        orbitCard.innerHTML = `
+        const card = document.createElement("div");
+        card.className = "copilot-page-msg-card orbit";
+        card.innerHTML = `
                 <div class="copilot-page-msg-header">
                     <i class="fa-solid fa-robot text-emerald"></i>
                     <strong>ORBIT Copilot</strong>
-                    ${latencyTag}
+                    ${d.latency_ms ? `<span>&bull; ${Number(d.latency_ms).toFixed(0)}ms</span>` : ""}
                 </div>
-                <div class="copilot-page-msg-body">${formatCopilotMarkdown(d.reply)}</div>
-            `;
-        messagesBox.appendChild(orbitCard);
+                <div class="copilot-page-msg-body">${formatCopilotMarkdown(d.answer)}</div>`;
+        messagesBox.appendChild(card);
         messagesBox.scrollTop = messagesBox.scrollHeight;
       }
       loadConversationsList();
     } catch (err) {
-      clearInterval(_copilotLoadingInterval);
+      window.clearInterval(_copilotLoadingInterval);
       if (loadingBar) loadingBar.classList.add("hidden");
       if (errorBanner) {
         const errMsg = getElement("copilot-page-error-msg");
-        if (errMsg) errMsg.textContent = `ORBIT Copilot notice: ${err.message}`;
+        if (errMsg) errMsg.textContent = `ORBIT Copilot notice: ${errorText2(err)}`;
         errorBanner.classList.remove("hidden");
       }
     } finally {
@@ -3273,6 +4253,8 @@
     }
   }
   function clearCopilotPageChat() {
+    if (_copilotPageSessionId) aiService.resetCopilotSession(_copilotPageSessionId).catch(() => {
+    });
     createNewAnalysis();
   }
 
@@ -3281,125 +4263,352 @@
   var CHART = {
     green: "#3fb950",
     red: "#e5484d",
-    cyan: "#4d7cfe",
-    purple: "#a371f7",
-    yellow: "#d29922",
     grid: "rgba(255,255,255,0.06)",
     axis: "rgba(255,255,255,0.22)",
     text: "#9ba2ad"
   };
+  function rupees(value, decimals = 2) {
+    const n = Number(value) || 0;
+    const sign = n < 0 ? "-" : "";
+    return sign + "\u20B9" + Math.abs(n).toLocaleString("en-IN", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+  function signedRupees(value) {
+    const n = Number(value) || 0;
+    return (n >= 0 ? "+" : "") + rupees(n);
+  }
+  function signedRupeesShort(value) {
+    const n = Number(value) || 0;
+    return (n >= 0 ? "+" : "") + rupees(n, 0);
+  }
+  function pnlClass(value) {
+    const n = Number(value) || 0;
+    return n > 0 ? "text-green" : n < 0 ? "text-red" : "text-muted";
+  }
+  function svgWrap(inner, width, height) {
+    return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" class="report-svg" role="img">${inner}</svg>`;
+  }
   function emptyChart(message) {
     return `<div class="report-chart-empty"><i class="fa-solid fa-chart-line"></i><span>${esc(message)}</span></div>`;
   }
   function renderEquityCurve(curve) {
     const host = getElement("chart-equity");
     if (!host) return;
-    if (!curve || curve.length === 0) {
+    if (!curve.length) {
       host.innerHTML = emptyChart("No closed trades yet \u2014 the equity curve appears once trades settle.");
       return;
     }
     const W = 1e3, H = 300, padL = 92, padR = 26, padT = 22, padB = 38;
     const plotW = W - padL - padR, plotH = H - padT - padB;
-    const values = curve.map((p) => p.cumulative || p.pnl || 0);
-    let min = Math.min(0, ...values);
+    const values = curve.map((p) => p.cumulative);
+    const min = Math.min(0, ...values);
     let max = Math.max(0, ...values);
     if (min === max) max = min + 1;
     const span = max - min;
     const x = (i) => padL + (curve.length === 1 ? plotW / 2 : i / (curve.length - 1) * plotW);
     const y = (v) => padT + plotH - (v - min) / span * plotH;
-    const points = curve.map((p, i) => `${x(i).toFixed(1)},${y(p.cumulative || p.pnl || 0).toFixed(1)}`).join(" ");
-    host.innerHTML = `
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="report-svg" role="img">
-            <polyline fill="none" stroke="${CHART.green}" stroke-width="2" points="${points}" />
-        </svg>
-    `;
-  }
-  async function loadReport() {
-    const userId = store.get("currentUserId");
-    if (!userId) return;
-    const reportGenerated = getElement("report-generated");
-    const reportTableBody = getElement("report-table-body");
-    if (reportGenerated) reportGenerated.textContent = "Generating...";
-    try {
-      const payload = await portfolioService.getReport(userId);
-      reportData = payload;
-      if (reportGenerated) {
-        safeText(reportGenerated, `Generated ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
-      }
-      const trades = payload.trades || [];
-      if (reportTableBody) {
-        if (trades.length === 0) {
-          reportTableBody.innerHTML = `<tr><td colspan="12" class="report-empty">No trades found.</td></tr>`;
-        } else {
-          reportTableBody.innerHTML = trades.slice(0, 50).map((t) => {
-            const pnl = Number(t.realized_pnl !== void 0 ? t.realized_pnl : t.pnl || 0);
-            const pnlClass = pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : "";
-            return `
-                        <tr>
-                            <td><strong>${esc(t.asset || t.symbol)}</strong></td>
-                            <td>${formatINR(t.entry_price || 0)}</td>
-                            <td>${formatINR(t.exit_price || 0)}</td>
-                            <td>${Number(t.quantity || 1)}</td>
-                            <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong></td>
-                            <td>${t.closed_at || t.timestamp ? new Date(t.closed_at || t.timestamp).toLocaleDateString() : "\u2014"}</td>
-                        </tr>
-                    `;
-          }).join("");
-        }
-      }
-      renderEquityCurve(payload.chart_data || []);
-    } catch (err) {
-      console.error("[Reports] Error loading report:", err);
-      if (reportGenerated) reportGenerated.textContent = "Could not load report";
-      if (reportTableBody) {
-        reportTableBody.innerHTML = `<tr><td colspan="12" class="report-empty text-red">Failed to load report: ${esc(err.message)}</td></tr>`;
-      }
+    let grid = "";
+    for (let t = 0; t <= 5; t++) {
+      const value = min + span * t / 5;
+      const gy = y(value);
+      grid += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="${CHART.grid}" stroke-width="1"/>`;
+      grid += `<text x="${padL - 8}" y="${gy + 4}" fill="${CHART.text}" font-size="11" text-anchor="end" font-family="monospace">${esc(rupees(value, 0))}</text>`;
     }
+    const zeroY = y(0);
+    grid += `<line x1="${padL}" y1="${zeroY}" x2="${W - padR}" y2="${zeroY}" stroke="${CHART.axis}" stroke-width="1.5" stroke-dasharray="4 4"/>`;
+    const points = curve.map((p, i) => `${x(i)},${y(p.cumulative)}`).join(" ");
+    const lineColor = values[values.length - 1] >= 0 ? CHART.green : CHART.red;
+    const area = `${padL},${zeroY} ${points} ${x(curve.length - 1)},${zeroY}`;
+    const dots = curve.length > 60 ? "" : curve.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.cumulative)}" r="3" fill="${p.pnl >= 0 ? CHART.green : CHART.red}" stroke="#0b0c0e" stroke-width="1">
+            <title>#${p.n} ${esc(p.asset || "")} \u2014 trade ${signedRupees(p.pnl)}, running ${signedRupees(p.cumulative)}</title>
+         </circle>`).join("");
+    host.innerHTML = svgWrap(`
+        <defs><linearGradient id="eqFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${lineColor}" stop-opacity="0.35"/><stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
+        </linearGradient></defs>
+        ${grid}
+        <polygon points="${area}" fill="url(#eqFill)"/>
+        <polyline points="${points}" fill="none" stroke="${lineColor}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+        ${dots}
+        <text x="${padL}" y="${H - 12}" fill="${CHART.text}" font-size="11">trade 1</text>
+        <text x="${W - padR}" y="${H - 12}" fill="${CHART.text}" font-size="11" text-anchor="end">trade ${curve.length}</text>`, W, H);
   }
-  function exportReportCsv() {
-    if (!reportData || !reportData.trades || reportData.trades.length === 0) {
-      alert("No trade data available to export.");
+  function renderPnlBars(curve) {
+    const host = getElement("chart-pnl-bars");
+    if (!host) return;
+    if (!curve.length) {
+      host.innerHTML = emptyChart("No closed trades to chart.");
       return;
     }
-    const trades = reportData.trades;
-    const headers = ["ID", "Asset", "Side", "Quantity", "Entry Price", "Exit Price", "P&L", "Status", "Date"];
-    const rows = trades.map((t) => [
-      t.id,
-      t.asset || t.symbol,
-      t.side || t.type,
-      t.quantity,
-      t.entry_price,
-      t.exit_price || "",
-      t.realized_pnl || t.pnl || 0,
-      t.status,
-      t.closed_at || t.timestamp || ""
-    ]);
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.map((x) => `"${x}"`).join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
+    const W = 520, H = 260, padL = 78, padR = 18, padT = 18, padB = 30;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    const bound = Math.max(1, ...curve.map((p) => Math.abs(p.pnl)));
+    const y = (v) => padT + plotH / 2 - v / bound * (plotH / 2);
+    const midY = padT + plotH / 2;
+    const slot = plotW / curve.length;
+    const barW = Math.max(2, Math.min(22, slot * 0.7));
+    const bars = curve.map((p, i) => {
+      const cx = padL + slot * i + slot / 2;
+      const top = p.pnl >= 0 ? y(p.pnl) : midY;
+      const h = Math.max(1, Math.abs(midY - y(p.pnl)));
+      return `<rect x="${cx - barW / 2}" y="${top}" width="${barW}" height="${h}" fill="${p.pnl >= 0 ? CHART.green : CHART.red}" opacity="0.85" rx="2">
+                    <title>#${p.n} ${esc(p.asset || "")} \u2014 ${signedRupees(p.pnl)}</title></rect>`;
+    }).join("");
+    host.innerHTML = svgWrap(`
+        <line x1="${padL}" y1="${y(bound)}" x2="${W - padR}" y2="${y(bound)}" stroke="${CHART.grid}"/>
+        <line x1="${padL}" y1="${y(-bound)}" x2="${W - padR}" y2="${y(-bound)}" stroke="${CHART.grid}"/>
+        <text x="${padL - 8}" y="${y(bound) + 4}" fill="${CHART.text}" font-size="10" text-anchor="end" font-family="monospace">${esc(rupees(bound, 0))}</text>
+        <text x="${padL - 8}" y="${y(-bound) + 4}" fill="${CHART.text}" font-size="10" text-anchor="end" font-family="monospace">${esc(rupees(-bound, 0))}</text>
+        ${bars}
+        <line x1="${padL}" y1="${midY}" x2="${W - padR}" y2="${midY}" stroke="${CHART.axis}" stroke-width="1"/>`, W, H);
+  }
+  function renderWinLoss(summary) {
+    const host = getElement("chart-winloss");
+    if (!host) return;
+    const wins = summary.wins || 0;
+    const losses = summary.losses || 0;
+    const total = wins + losses;
+    if (total === 0) {
+      host.innerHTML = emptyChart("No settled trades yet.");
+      return;
+    }
+    const W = 520, H = 260, cx = 170, cy = 130, r = 80, thickness = 26, legendX = 353, legendTextX = 373;
+    const circumference = 2 * Math.PI * r;
+    const winFraction = wins / total;
+    host.innerHTML = svgWrap(`
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${CHART.red}" stroke-width="${thickness}"/>
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${CHART.green}" stroke-width="${thickness}"
+                stroke-dasharray="${circumference * winFraction} ${circumference}" transform="rotate(-90 ${cx} ${cy})" stroke-linecap="butt"/>
+        <text x="${cx}" y="${cy - 2}" fill="#e7e9ec" font-size="32" font-weight="700" text-anchor="middle" font-family="monospace">${(winFraction * 100).toFixed(1)}%</text>
+        <text x="${cx}" y="${cy + 22}" fill="${CHART.text}" font-size="12" text-anchor="middle">win rate</text>
+        <rect x="${legendX}" y="90" width="13" height="13" rx="3" fill="${CHART.green}"/>
+        <text x="${legendTextX}" y="102" fill="#e7e9ec" font-size="14">${wins} wins</text>
+        <text x="${legendTextX}" y="121" fill="${CHART.text}" font-size="12" font-family="monospace">${esc(rupees(summary.gross_profit, 0))}</text>
+        <rect x="${legendX}" y="152" width="13" height="13" rx="3" fill="${CHART.red}"/>
+        <text x="${legendTextX}" y="164" fill="#e7e9ec" font-size="14">${losses} losses</text>
+        <text x="${legendTextX}" y="183" fill="${CHART.text}" font-size="12" font-family="monospace">${esc(rupees(-summary.gross_loss, 0))}</text>`, W, H);
+  }
+  function renderBreakdown(hostId, rows, emptyMessage) {
+    const host = getElement(hostId);
+    if (!host) return;
+    if (!rows.length) {
+      host.innerHTML = emptyChart(emptyMessage);
+      return;
+    }
+    const shown = rows.slice(0, 8);
+    const rowH = 30, padL = 112, padR = 104, W = 520, H = 264;
+    const padT = Math.max(12, (H - shown.length * rowH) / 2);
+    const plotW = W - padL - padR;
+    const bound = Math.max(1, ...shown.map((r) => Math.abs(r.pnl)));
+    const midX = padL + plotW / 2;
+    const scale = plotW / 2 / bound;
+    const bars = shown.map((r, i) => {
+      const cy = padT + i * rowH + rowH / 2;
+      const w2 = Math.max(1, Math.abs(r.pnl) * scale);
+      const x = r.pnl >= 0 ? midX : midX - w2;
+      const color = r.pnl >= 0 ? CHART.green : CHART.red;
+      const label = String(r.name).length > 15 ? String(r.name).slice(0, 14) + "\u2026" : String(r.name);
+      return `
+            <text x="${padL - 10}" y="${cy + 4}" fill="${CHART.text}" font-size="11" text-anchor="end">${esc(label)}</text>
+            <rect x="${x}" y="${cy - 9}" width="${w2}" height="18" fill="${color}" opacity="0.8" rx="2">
+                <title>${esc(r.name)} \u2014 ${r.trades} trades${r.win_rate !== void 0 ? `, ${r.win_rate}% win rate` : ""}, ${signedRupees(r.pnl)}</title>
+            </rect>
+            <text x="${W - padR + 12}" y="${cy + 4}" fill="${color}" font-size="11" font-family="monospace">${esc(signedRupeesShort(r.pnl))}</text>`;
+    }).join("");
+    host.innerHTML = svgWrap(`<line x1="${midX}" y1="${padT}" x2="${midX}" y2="${H - padT}" stroke="${CHART.axis}" stroke-width="1"/>${bars}`, W, H);
+  }
+  function renderKpis(s) {
+    const netEl = getElement("rk-net-pnl");
+    if (netEl) {
+      netEl.textContent = signedRupees(s.net_pnl);
+      netEl.className = "report-kpi-value " + pnlClass(s.net_pnl);
+    }
+    safeText(getElement("rk-net-pnl-sub"), `${s.closed_trades} closed of ${s.total_trades} total`);
+    safeText(getElement("rk-win-rate"), `${s.win_rate}%`);
+    safeText(getElement("rk-win-rate-sub"), `${s.wins}W / ${s.losses}L`);
+    const pfEl = getElement("rk-profit-factor");
+    if (pfEl) {
+      pfEl.textContent = s.profit_factor === null ? "\u221E" : s.profit_factor.toFixed(2);
+      pfEl.className = "report-kpi-value " + (s.profit_factor === null || s.profit_factor >= 1 ? "text-green" : "text-red");
+    }
+    const expEl = getElement("rk-expectancy");
+    if (expEl) {
+      expEl.textContent = signedRupees(s.expectancy);
+      expEl.className = "report-kpi-value " + pnlClass(s.expectancy);
+    }
+    safeText(getElement("rk-drawdown"), rupees(s.max_drawdown));
+    safeText(getElement("rk-drawdown-sub"), `${s.max_drawdown_pct}% of peak equity`);
+    const ratio = s.avg_loss > 0 ? s.avg_win / s.avg_loss : null;
+    safeText(getElement("rk-avg-ratio"), ratio === null ? "\u2014" : `${ratio.toFixed(2)} : 1`);
+    safeText(getElement("rk-avg-sub"), `${rupees(s.avg_win, 0)} avg win / ${rupees(s.avg_loss, 0)} avg loss`);
+    safeText(getElement("rk-best-worst"), `${signedRupeesShort(s.best_trade)} / ${signedRupeesShort(s.worst_trade)}`);
+    safeText(getElement("rk-streaks"), `streaks ${s.longest_win_streak}W / ${s.longest_loss_streak}L`);
+    safeText(getElement("rk-open"), String(s.open_trades + s.pending_trades));
+    safeText(getElement("rk-open-sub"), `${s.open_trades} active \xB7 ${s.pending_trades} pending \xB7 unrealized ${signedRupeesShort(s.unrealized_pnl)}`);
+  }
+  function filteredTrades() {
+    if (!reportData) return [];
+    const asset = getElement("report-filter-asset")?.value || "all";
+    const outcome = getElement("report-filter-outcome")?.value || "all";
+    return reportData.trades.filter((t) => {
+      if (asset !== "all" && t.asset !== asset) return false;
+      if (outcome === "win") return t.status === "closed" && Number(t.pnl) > 0;
+      if (outcome === "loss") return t.status === "closed" && Number(t.pnl) <= 0;
+      if (outcome === "open") return t.status === "active" || t.status === "pending";
+      return true;
+    });
+  }
+  function renderTable() {
+    const tbody = getElement("report-table-body");
+    if (!tbody) return;
+    const rows = filteredTrades();
+    safeText(getElement("report-row-count"), `${rows.length} trade${rows.length === 1 ? "" : "s"}`);
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="12" class="report-empty">${reportData ? "No trades match the current filter." : "No report loaded."}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.slice().reverse().map((t) => {
+      const pnl = Number(t.pnl) || 0;
+      const isClosed = t.status === "closed";
+      return `
+            <tr>
+                <td class="mono muted">${esc(t.id)}</td>
+                <td class="mono">${esc(t.timestamp || "\u2014")}</td>
+                <td><strong>${esc(t.asset)}</strong></td>
+                <td><span class="report-badge ${t.type === "buy" ? "badge-buy" : "badge-sell"}">${esc(String(t.type || "").toUpperCase())}</span></td>
+                <td class="mono">${Number(t.quantity || 0).toFixed(4)}</td>
+                <td class="mono">${esc(rupees(t.entry_price))}</td>
+                <td class="mono">${t.exit_price ? esc(rupees(t.exit_price)) : "\u2014"}</td>
+                <td class="mono text-red">${esc(rupees(t.sl))}</td>
+                <td class="mono text-green">${esc(rupees(t.target))}</td>
+                <td><span class="report-badge badge-${esc(t.status)}">${esc(String(t.status || "").toUpperCase())}</span></td>
+                <td class="muted">${esc(t.outcome ? String(t.outcome).toUpperCase() : "\u2014")}</td>
+                <td class="mono ta-right ${isClosed ? pnlClass(pnl) : "text-muted"}">${isClosed ? esc(signedRupees(pnl)) : "\u2014"}</td>
+            </tr>`;
+    }).join("");
+  }
+  async function loadReport() {
+    if (!store.get("currentUserId")) return;
+    const generated = getElement("report-generated");
+    if (generated) generated.textContent = "Generating\u2026";
+    try {
+      reportData = await portfolioService.getReport(store.get("currentUserId"));
+    } catch (err) {
+      if (generated) generated.textContent = "Could not load report";
+      const tbody = getElement("report-table-body");
+      if (tbody) tbody.innerHTML = `<tr><td colspan="12" class="report-empty text-red">Failed to load the report: ${esc(err.message)}</td></tr>`;
+      return;
+    }
+    safeText(generated, `Generated ${reportData.generated_at}`);
+    const assetFilter = getElement("report-filter-asset");
+    if (assetFilter) {
+      const previous = assetFilter.value;
+      const assets = [...new Set(reportData.trades.map((t) => t.asset))].sort();
+      assetFilter.innerHTML = `<option value="all">All Assets</option>` + assets.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
+      if (assets.includes(previous)) assetFilter.value = previous;
+    }
+    renderKpis(reportData.summary);
+    renderEquityCurve(reportData.equity_curve || []);
+    renderPnlBars(reportData.equity_curve || []);
+    renderWinLoss(reportData.summary);
+    renderBreakdown("chart-by-asset", reportData.by_asset || [], "No closed trades to break down by asset.");
+    renderBreakdown("chart-by-month", reportData.by_month || [], "No closed trades to break down by month.");
+    renderTable();
+  }
+  function downloadBlob(content, filename, mimeType) {
+    const url = URL.createObjectURL(new Blob([content], { type: mimeType }));
     const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `orbit_trades_report_${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.csv`);
+    link.href = url;
+    link.download = filename;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1e3);
+  }
+  function stamp() {
+    const d = /* @__PURE__ */ new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  }
+  function exportReportCsv() {
+    if (!reportData) {
+      alert("Load the report first.");
+      return;
+    }
+    const s = reportData.summary;
+    const cell = (v) => {
+      const text = String(v === null || v === void 0 ? "" : v);
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const lines = ["ORBIT TRADING TERMINAL - PERFORMANCE REPORT", `Generated,${cell(reportData.generated_at)}`, "", "SUMMARY"];
+    [
+      ["Total Trades", s.total_trades],
+      ["Closed Trades", s.closed_trades],
+      ["Open Trades", s.open_trades],
+      ["Pending Trades", s.pending_trades],
+      ["Wins", s.wins],
+      ["Losses", s.losses],
+      ["Win Rate %", s.win_rate],
+      ["Net Realized P&L", s.net_pnl],
+      ["Gross Profit", s.gross_profit],
+      ["Gross Loss", s.gross_loss],
+      ["Profit Factor", s.profit_factor === null ? "N/A (no losses)" : s.profit_factor],
+      ["Expectancy Per Trade", s.expectancy],
+      ["Average Win", s.avg_win],
+      ["Average Loss", s.avg_loss],
+      ["Best Trade", s.best_trade],
+      ["Worst Trade", s.worst_trade],
+      ["Max Drawdown", s.max_drawdown],
+      ["Max Drawdown %", s.max_drawdown_pct],
+      ["Longest Win Streak", s.longest_win_streak],
+      ["Longest Loss Streak", s.longest_loss_streak],
+      ["Unrealized P&L", s.unrealized_pnl]
+    ].forEach(([k, v]) => lines.push(`${cell(k)},${cell(v)}`));
+    lines.push("", "TRADE LEDGER", ["ID", "Timestamp", "Asset", "Side", "Quantity", "Entry", "Exit", "Stop Loss", "Target", "Status", "Outcome", "P&L"].join(","));
+    filteredTrades().forEach((t) => lines.push([
+      t.id,
+      t.timestamp,
+      t.asset,
+      t.type,
+      t.quantity,
+      t.entry_price,
+      t.exit_price ?? "",
+      t.sl,
+      t.target,
+      t.status,
+      t.outcome || "",
+      t.pnl
+    ].map(cell).join(",")));
+    downloadBlob("\uFEFF" + lines.join("\r\n"), `orbit-report-${stamp()}.csv`, "text/csv;charset=utf-8");
   }
   function exportReportJson() {
     if (!reportData) {
-      alert("No trade data available to export.");
+      alert("Load the report first.");
       return;
     }
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(reportData, null, 2));
-    const link = document.createElement("a");
-    link.setAttribute("href", dataStr);
-    link.setAttribute("download", `orbit_report_${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    downloadBlob(JSON.stringify(reportData, null, 2), `orbit-report-${stamp()}.json`, "application/json");
+  }
+  function exportReportPdf() {
+    if (!reportData) return;
+    document.body.classList.add("printing-report");
+    const cleanup = () => {
+      document.body.classList.remove("printing-report");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    window.print();
+    setTimeout(cleanup, 3e3);
   }
   function initReportsListeners() {
-    getElement("report-refresh-btn")?.addEventListener("click", () => loadReport());
-    getElement("report-export-csv")?.addEventListener("click", () => exportReportCsv());
-    getElement("report-export-json")?.addEventListener("click", () => exportReportJson());
+    const bind = (id, event, handler) => {
+      const node = getElement(id);
+      if (node && !node.hasAttribute("onclick")) node.addEventListener(event, handler);
+    };
+    bind("report-refresh-btn", "click", () => void loadReport());
+    bind("report-export-csv", "click", exportReportCsv);
+    bind("report-export-json", "click", exportReportJson);
+    bind("report-export-pdf", "click", exportReportPdf);
+    bind("report-filter-asset", "change", renderTable);
+    bind("report-filter-outcome", "change", renderTable);
   }
 
   // src/ui/landingController.ts
@@ -3759,45 +4968,48 @@
     const modal = getElement("ai-simulation-modal");
     if (modal) modal.classList.add("hidden");
   }
-  function drawBtcSparkline() {
+  async function drawBtcSparkline() {
     const canvas = getElement("btc-sparkline-canvas");
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    let points = [];
+    try {
+      const res = await fetch("/api/market/history?symbol=BTC-USD&period=30d&interval=1d", { credentials: "same-origin" });
+      if (res.ok) {
+        const json = await res.json();
+        const candles = json && json.data && json.data.candles || [];
+        points = candles.slice(-14).map((c) => Number(c.close)).filter((v) => Number.isFinite(v) && v > 0);
+      }
+    } catch {
+      points = [];
+    }
     const width = canvas.width;
     const height = canvas.height;
-    const points = [14, 18, 16, 22, 20, 26, 24, 30, 28, 35, 32, 40, 38, 44];
+    ctx.clearRect(0, 0, width, height);
+    if (points.length < 2) return;
     const maxVal = Math.max(...points);
     const minVal = Math.min(...points);
-    ctx.clearRect(0, 0, width, height);
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(52, 211, 153, 0.3)");
-    gradient.addColorStop(1, "rgba(52, 211, 153, 0.0)");
-    ctx.beginPath();
+    const range = maxVal - minVal || 1;
     const stepX = width / (points.length - 1);
-    points.forEach((val, i) => {
-      const x = i * stepX;
-      const normalizedY = (val - minVal) / (maxVal - minVal);
-      const y = height - 6 - normalizedY * (height - 12);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
+    const yOf = (val) => height - 6 - (val - minVal) / range * (height - 12);
+    const rising = points[points.length - 1] >= points[0];
+    const color = rising ? "#34d399" : "#f87171";
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, rising ? "rgba(52, 211, 153, 0.3)" : "rgba(248, 113, 113, 0.3)");
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.beginPath();
+    points.forEach((val, i) => i === 0 ? ctx.moveTo(0, yOf(val)) : ctx.lineTo(i * stepX, yOf(val)));
     ctx.lineTo(width, height);
     ctx.lineTo(0, height);
     ctx.closePath();
     ctx.fillStyle = gradient;
     ctx.fill();
     ctx.beginPath();
-    points.forEach((val, i) => {
-      const x = i * stepX;
-      const normalizedY = (val - minVal) / (maxVal - minVal);
-      const y = height - 6 - normalizedY * (height - 12);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#34d399";
+    points.forEach((val, i) => i === 0 ? ctx.moveTo(0, yOf(val)) : ctx.lineTo(i * stepX, yOf(val)));
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2.5;
-    ctx.shadowColor = "#34d399";
+    ctx.shadowColor = color;
     ctx.shadowBlur = 8;
     ctx.stroke();
   }
@@ -4164,6 +5376,11 @@
   w.drawChartOverlay = drawChartOverlay;
   w.confirmTrade = confirmTrade;
   w.rejectTrade = rejectTrade;
+  w.prepareTradeEnvironment = prepareTradeEnvironment;
+  w.runAgentCrew = runAgentCrew;
+  w.stopAgentCrew = stopAgentCrew;
+  w.fetchGlobalNews = fetchGlobalNews;
+  w.fetchSymbolNews = fetchSymbolNews;
   w.loadManageTradesData = loadManageTradesData;
   w.refreshAllData = refreshAllData;
   w.loadOpenTrades = loadOpenTrades;
@@ -4237,6 +5454,7 @@
   w.loadReport = loadReport;
   w.exportReportCsv = exportReportCsv;
   w.exportReportJson = exportReportJson;
+  w.exportReportPdf = exportReportPdf;
   w.renderSkills = renderSkills;
   w.renderStrategies = renderStrategies;
   w.filterSkills = filterSkills;
@@ -4257,72 +5475,104 @@
   }
   if (!w.stop3D) w.stop3D = () => w.aether3D?.stop ? w.aether3D.stop() : threeController.stop();
   if (!w.start3D) w.start3D = () => w.aether3D?.start ? w.aether3D.start() : threeController.start();
+  function throttle(fn, ms) {
+    let last = 0;
+    let timer = null;
+    return () => {
+      const wait = ms - (Date.now() - last);
+      if (wait <= 0 && timer === null) {
+        last = Date.now();
+        fn();
+        return;
+      }
+      if (timer === null) {
+        timer = window.setTimeout(() => {
+          timer = null;
+          last = Date.now();
+          fn();
+        }, Math.max(0, wait));
+      }
+    };
+  }
+  var refreshPortfolio = throttle(() => {
+    loadOpenTrades();
+    loadPendingOrders();
+    fetchDashboardSummary();
+  }, 1500);
+  var refreshLivePnl = throttle(() => {
+    loadOpenTrades();
+    fetchDashboardSummary();
+  }, 5e3);
+  var refreshHistory = throttle(() => {
+    loadTradeHistoryPage(store.get("historyPage") || 0);
+    loadOverviewHistory();
+  }, 3e3);
   function setupWebSocketSubscriptions() {
     const sockets = store.sockets;
-    sockets.on("tick", (msg) => {
-      const price = msg.data?.price || (msg.candle ? msg.candle.close : null);
-      if (price !== null && price !== void 0) {
-        const legendPrice = getElement("legend-price");
-        if (legendPrice) legendPrice.textContent = formatINR(price);
-      }
-    });
+    sockets.on("tick", (msg) => handleTick(msg));
+    sockets.on("history", (msg) => handleHistory(msg));
+    sockets.on("levels", (msg) => handleLevels(msg));
+    sockets.on("signal", (msg) => handleSignal(msg));
+    sockets.on("metrics", (msg) => handleMetrics(msg));
+    sockets.on("system_status", (msg) => handleSystemStatus(msg));
     sockets.on("log", (msg) => {
       if (msg.agent && msg.message) {
         logToTerminal(msg.agent, msg.message, msg.time);
         updateAgentStatusUI(msg.agent, msg.message);
       }
     });
-    sockets.on("positions_updated", () => {
-      loadOpenTrades();
-      fetchDashboardSummary();
-    });
     sockets.on("dashboard_summary", (msg) => {
-      if (msg.data) {
-        store.set("dashboardSummary", msg.data);
-      }
+      if (msg.data) renderDashboardSummary(msg.data);
     });
-    sockets.on("wallet_updated", (msg) => {
-      if (msg.balance !== void 0) {
-        store.set("walletBalance", msg.balance);
+    const onWallet = (msg) => {
+      const balance = typeof msg.balance === "number" ? msg.balance : msg.data?.balance;
+      if (typeof balance === "number") {
+        store.set("walletBalance", balance);
         const walletEl = getElement("wallet-balance");
-        if (walletEl) walletEl.textContent = formatINR(msg.balance);
+        if (walletEl) walletEl.textContent = formatINRSafe(balance);
       }
-    });
-    sockets.on("bot_event", (msg) => {
-      handleBotEvent(msg);
-    });
-    sockets.on("bot_session_updated", (msg) => {
-      handleBotSessionUpdate(msg.data);
+      refreshPortfolio();
+    };
+    sockets.on("wallet", onWallet);
+    sockets.on("wallet_updated", onWallet);
+    for (const evt of ["positions", "positions_updated", "trade_opened", "trade_closed"]) {
+      sockets.on(evt, () => refreshPortfolio());
+    }
+    for (const evt of ["trade_updated", "position_updated"]) {
+      sockets.on(evt, () => refreshLivePnl());
+    }
+    sockets.on("history_trades", () => refreshHistory());
+    sockets.on("bot_event", (msg) => handleBotEvent(msg));
+    sockets.on("bot_session_updated", (msg) => handleBotSessionUpdate(msg.data));
+    sockets.on("auth_error", () => {
+      void handleUnauthorized();
     });
   }
   function initApp() {
     initLandingShowcase();
     initModalKeyboardListeners();
     initTerminalListeners();
+    initTerminalAgentListeners();
     initAutoBotListeners();
     initReportsListeners();
     setupWebSocketSubscriptions();
-    const loginForm = getElement("login-form");
-    if (loginForm) loginForm.addEventListener("submit", handleLogin);
-    const signupForm = getElement("signup-form");
-    if (signupForm) signupForm.addEventListener("submit", handleSignup);
-    const logoutBtn = getElement("logout-btn");
-    if (logoutBtn) logoutBtn.addEventListener("click", logout);
+    getElement("login-form")?.addEventListener("submit", handleLogin);
+    getElement("signup-form")?.addEventListener("submit", handleSignup);
+    getElement("logout-btn")?.addEventListener("click", logout);
+    window.addEventListener(UNAUTHORIZED_EVENT, () => {
+      void handleUnauthorized();
+    });
+    window.addEventListener(SOCKET_FAILED_EVENT, () => {
+      if (document.body.classList.contains("in-dashboard")) authService.me().catch(() => {
+      });
+    });
     if (!document.body.classList.contains("in-dashboard") && !window.location.hash.includes("dashboard")) {
-      if (typeof w.start3D === "function") {
-        w.start3D();
-      } else {
-        threeController.start();
-      }
+      if (typeof w.start3D === "function") w.start3D();
+      else threeController.start();
     }
     initClerkAuth();
-    const savedUsername = localStorage.getItem("orbit_logged_in_username");
-    const savedUserId = localStorage.getItem("orbit_user_id");
-    const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
-    const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1e3;
-    const isReturningFromOAuth = oauthFresh || window.location.hash.includes("dashboard") || window.location.hash.includes("sso-callback");
-    if (savedUsername && (isReturningFromOAuth || window.location.hash === "#dashboard")) {
-      enterDashboard(savedUsername, savedUserId);
+    if (window.location.hash.includes("dashboard")) {
+      void restoreSession();
     }
   }
   if (document.readyState === "loading") {

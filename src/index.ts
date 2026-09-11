@@ -1,11 +1,15 @@
 /**
  * ORBIT Trading Terminal — Main TypeScript Application Bootstrap
- * Seamlessly connects UI controllers, services, state, and WebSockets while exposing window bindings
+ * Connects UI controllers, services, state and WebSockets, and exposes the
+ * window bindings used by index.html's inline handlers.
  */
 
 import { store } from "./state/store";
-import { formatINR, esc } from "./utils/formatters";
+import { formatINR, formatINRSafe, esc } from "./utils/formatters";
 import { getElement } from "./utils/dom";
+import { UNAUTHORIZED_EVENT } from "./services/apiClient";
+import { authService } from "./services/authService";
+import { SOCKET_FAILED_EVENT } from "./websocket/socketManager";
 
 import {
     initClerkAuth,
@@ -18,7 +22,9 @@ import {
     handleClerkGoogleAuth,
     handleLogin,
     handleSignup,
-    logout
+    logout,
+    restoreSession,
+    handleUnauthorized
 } from "./ui/authController";
 
 import {
@@ -33,12 +39,28 @@ import {
 } from "./ui/terminalController";
 
 import {
+    initTerminalAgentListeners,
+    prepareTradeEnvironment,
+    runAgentCrew,
+    stopAgentCrew,
+    handleTick,
+    handleHistory,
+    handleLevels,
+    handleSignal,
+    handleMetrics,
+    handleSystemStatus
+} from "./ui/terminalAgentController";
+
+import { fetchGlobalNews, fetchSymbolNews } from "./ui/newsController";
+
+import {
     loadManageTradesData,
     refreshAllData,
     loadOpenTrades,
     loadPendingOrders,
     cancelPendingOrder,
     loadTradeHistoryPage,
+    loadOverviewHistory,
     paginateHistory,
     debouncedHistorySearch,
     openManageTradeModal,
@@ -48,6 +70,7 @@ import {
     setMaxCloseQty,
     executePositionClose,
     fetchDashboardSummary,
+    renderDashboardSummary,
     switchManageSubTab
 } from "./ui/manageTradesController";
 
@@ -120,6 +143,7 @@ import {
     loadReport,
     exportReportCsv,
     exportReportJson,
+    exportReportPdf,
     initReportsListeners
 } from "./ui/reportsController";
 
@@ -164,6 +188,13 @@ w.initChart = initChart;
 w.drawChartOverlay = drawChartOverlay;
 w.confirmTrade = confirmTrade;
 w.rejectTrade = rejectTrade;
+w.prepareTradeEnvironment = prepareTradeEnvironment;
+w.runAgentCrew = runAgentCrew;
+w.stopAgentCrew = stopAgentCrew;
+
+// News
+w.fetchGlobalNews = fetchGlobalNews;
+w.fetchSymbolNews = fetchSymbolNews;
 
 // Manage Trades
 w.loadManageTradesData = loadManageTradesData;
@@ -228,7 +259,7 @@ w.sendCopilotPageMessage = sendCopilotPageMessage;
 w.askCopilotPagePreset = askCopilotPagePreset;
 w.clearCopilotPageChat = clearCopilotPageChat;
 
-// AutoBot & Terminal
+// AutoBot & Terminal log
 w.logToTerminal = logToTerminal;
 w.updateAgentStatusUI = updateAgentStatusUI;
 w.loadBotConfig = loadBotConfig;
@@ -247,6 +278,7 @@ w.handleBotSessionUpdate = handleBotSessionUpdate;
 w.loadReport = loadReport;
 w.exportReportCsv = exportReportCsv;
 w.exportReportJson = exportReportJson;
+w.exportReportPdf = exportReportPdf;
 
 // Landing Page Showcase & Skills
 w.renderSkills = renderSkills;
@@ -277,16 +309,53 @@ if (!w.start3D) w.start3D = () => (w.aether3D?.start ? w.aether3D.start() : thre
 // -------------------------------------------------------------
 // WebSocket Listeners & Reactive Data Stream Wiring
 // -------------------------------------------------------------
+
+/** Runs fn at most once per `ms`, always delivering the latest trailing call. */
+function throttle(fn: () => void, ms: number): () => void {
+    let last = 0;
+    let timer: number | null = null;
+    return () => {
+        const wait = ms - (Date.now() - last);
+        if (wait <= 0 && timer === null) {
+            last = Date.now();
+            fn();
+            return;
+        }
+        if (timer === null) {
+            timer = window.setTimeout(() => {
+                timer = null;
+                last = Date.now();
+                fn();
+            }, Math.max(0, wait));
+        }
+    };
+}
+
+// Portfolio changes (fills, closes, wallet moves) refresh the authoritative views.
+const refreshPortfolio = throttle(() => {
+    loadOpenTrades();
+    loadPendingOrders();
+    fetchDashboardSummary();
+}, 1500);
+// Per-tick P&L pushes arrive every few seconds per position; coalesce them.
+const refreshLivePnl = throttle(() => {
+    loadOpenTrades();
+    fetchDashboardSummary();
+}, 5000);
+const refreshHistory = throttle(() => {
+    loadTradeHistoryPage(store.get("historyPage") || 0);
+    loadOverviewHistory();
+}, 3000);
+
 function setupWebSocketSubscriptions(): void {
     const sockets = store.sockets;
 
-    sockets.on("tick", (msg: any) => {
-        const price = msg.data?.price || (msg.candle ? msg.candle.close : null);
-        if (price !== null && price !== undefined) {
-            const legendPrice = getElement("legend-price");
-            if (legendPrice) legendPrice.textContent = formatINR(price);
-        }
-    });
+    sockets.on("tick", (msg: any) => handleTick(msg));
+    sockets.on("history", (msg: any) => handleHistory(msg));
+    sockets.on("levels", (msg: any) => handleLevels(msg));
+    sockets.on("signal", (msg: any) => handleSignal(msg));
+    sockets.on("metrics", (msg: any) => handleMetrics(msg));
+    sockets.on("system_status", (msg: any) => handleSystemStatus(msg));
 
     sockets.on("log", (msg: any) => {
         if (msg.agent && msg.message) {
@@ -295,31 +364,34 @@ function setupWebSocketSubscriptions(): void {
         }
     });
 
-    sockets.on("positions_updated", () => {
-        loadOpenTrades();
-        fetchDashboardSummary();
-    });
-
     sockets.on("dashboard_summary", (msg: any) => {
-        if (msg.data) {
-            store.set("dashboardSummary", msg.data);
-        }
+        if (msg.data) renderDashboardSummary(msg.data);
     });
 
-    sockets.on("wallet_updated", (msg: any) => {
-        if (msg.balance !== undefined) {
-            store.set("walletBalance", msg.balance);
+    const onWallet = (msg: any) => {
+        const balance = typeof msg.balance === "number" ? msg.balance : msg.data?.balance;
+        if (typeof balance === "number") {
+            store.set("walletBalance", balance);
             const walletEl = getElement("wallet-balance");
-            if (walletEl) walletEl.textContent = formatINR(msg.balance);
+            if (walletEl) walletEl.textContent = formatINRSafe(balance);
         }
-    });
+        refreshPortfolio();
+    };
+    sockets.on("wallet", onWallet);
+    sockets.on("wallet_updated", onWallet);
 
-    sockets.on("bot_event", (msg: any) => {
-        handleBotEvent(msg);
-    });
+    for (const evt of ["positions", "positions_updated", "trade_opened", "trade_closed"] as const) {
+        sockets.on(evt, () => refreshPortfolio());
+    }
+    for (const evt of ["trade_updated", "position_updated"] as const) {
+        sockets.on(evt, () => refreshLivePnl());
+    }
+    sockets.on("history_trades", () => refreshHistory());
 
-    sockets.on("bot_session_updated", (msg: any) => {
-        handleBotSessionUpdate(msg.data);
+    sockets.on("bot_event", (msg: any) => handleBotEvent(msg));
+    sockets.on("bot_session_updated", (msg: any) => handleBotSessionUpdate(msg.data));
+    sockets.on("auth_error", () => {
+        void handleUnauthorized();
     });
 }
 
@@ -330,44 +402,35 @@ function initApp(): void {
     initLandingShowcase();
     initModalKeyboardListeners();
     initTerminalListeners();
+    initTerminalAgentListeners();
     initAutoBotListeners();
     initReportsListeners();
     setupWebSocketSubscriptions();
 
-    // Wire auth form submission listeners
-    const loginForm = getElement<HTMLFormElement>("login-form");
-    if (loginForm) loginForm.addEventListener("submit", handleLogin);
+    getElement<HTMLFormElement>("login-form")?.addEventListener("submit", handleLogin);
+    getElement<HTMLFormElement>("signup-form")?.addEventListener("submit", handleSignup);
+    getElement("logout-btn")?.addEventListener("click", logout);
 
-    const signupForm = getElement<HTMLFormElement>("signup-form");
-    if (signupForm) signupForm.addEventListener("submit", handleSignup);
+    // The gateway rejected the session (REST 401) or the private socket could
+    // not be opened: re-check the session, recover it from Clerk, or sign out.
+    window.addEventListener(UNAUTHORIZED_EVENT, () => {
+        void handleUnauthorized();
+    });
+    window.addEventListener(SOCKET_FAILED_EVENT, () => {
+        if (document.body.classList.contains("in-dashboard")) authService.me().catch(() => {});
+    });
 
-    const logoutBtn = getElement("logout-btn");
-    if (logoutBtn) logoutBtn.addEventListener("click", logout);
-
-    // Initialize 3D scene on landing page
     if (!document.body.classList.contains("in-dashboard") && !window.location.hash.includes("dashboard")) {
-        if (typeof w.start3D === "function") {
-            w.start3D();
-        } else {
-            threeController.start();
-        }
+        if (typeof w.start3D === "function") w.start3D();
+        else threeController.start();
     }
 
-    // Initialize Clerk in background
     initClerkAuth();
 
-    // Check if user is already logged in or navigating to #dashboard
-    const savedUsername = localStorage.getItem("orbit_logged_in_username");
-    const savedUserId = localStorage.getItem("orbit_user_id");
-    const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
-    const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1000;
-    const isReturningFromOAuth =
-        oauthFresh ||
-        window.location.hash.includes("dashboard") ||
-        window.location.hash.includes("sso-callback");
-
-    if (savedUsername && (isReturningFromOAuth || window.location.hash === "#dashboard")) {
-        enterDashboard(savedUsername, savedUserId);
+    // Re-open the dashboard only for a session the gateway still accepts
+    // (its HttpOnly cookie) — never from a user id kept in the browser.
+    if (window.location.hash.includes("dashboard")) {
+        void restoreSession();
     }
 }
 

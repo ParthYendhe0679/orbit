@@ -1,5 +1,5 @@
 """
-backend/services/explainability_engine.py — ORBIT Explainability & Insight Engine (Phase 10).
+ai-service/services/explainability_engine.py — ORBIT Explainability & Insight Engine (Phase 10).
 
 Centralized, deterministic, explainable, and traceable insight synthesis system.
 Answers the foundational user questions:
@@ -22,9 +22,9 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backend.models.brain import BrainAnalysisContext, BrainStatus
-from backend.models.decision import DecisionEvaluationResult, MarketStance, DecisionClarity, DecisionStatus
-from backend.models.explainability import (
+from models.brain import BrainAnalysisContext, BrainStatus
+from models.decision import DecisionEvaluationResult, MarketStance, DecisionClarity, DecisionStatus
+from models.explainability import (
     ConflictExplanation,
     ExplainabilityDiagnostics,
     ExplainabilityEvaluationResult,
@@ -35,12 +35,12 @@ from backend.models.explainability import (
     TraceableEvidenceItem,
     UncertaintyReason,
 )
-from backend.models.opportunity import OpportunityEvaluationResult, OpportunityStatus
-from backend.models.risk import RiskEvaluationResult, RiskStatus
-from backend.services.decision_engine import DecisionEngine, decision_engine
-from backend.services.opportunity_engine import OpportunityEngine, opportunity_engine
-from backend.services.orbit_brain import OrbitBrain, orbit_brain
-from backend.services.risk_guard import RiskGuard, risk_guard
+from models.opportunity import OpportunityEvaluationResult, OpportunityStatus
+from models.risk import RiskEvaluationResult, RiskStatus
+from services.decision_engine import DecisionEngine, decision_engine
+from services.opportunity_engine import OpportunityEngine, opportunity_engine
+from services.orbit_brain import OrbitBrain, orbit_brain
+from services.risk_guard import RiskGuard, risk_guard
 
 logger = logging.getLogger("orbit.explainability_engine")
 

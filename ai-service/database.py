@@ -234,15 +234,22 @@ def init_db():
             balance REAL NOT NULL DEFAULT 1000000.0
         )
         """)
-        # Migrate existing SQLite user table if columns are missing
+        # Migrate existing SQLite user table if columns are missing. SQLite
+        # cannot ADD a UNIQUE column, so uniqueness comes from an index (the old
+        # "TEXT UNIQUE" form failed silently and clerk_id never existed).
         cursor.execute("PRAGMA table_info(user)")
         user_cols = [col[1] for col in cursor.fetchall()]
-        for col_def in [("email", "TEXT UNIQUE"), ("password_hash", "TEXT"), ("is_verified", "INTEGER NOT NULL DEFAULT 0"), ("clerk_id", "TEXT UNIQUE")]:
-            if col_def[0] not in user_cols:
+        for col_name, col_type in [("email", "TEXT"), ("password_hash", "TEXT"), ("is_verified", "INTEGER NOT NULL DEFAULT 0"), ("clerk_id", "TEXT")]:
+            if col_name not in user_cols:
                 try:
-                    cursor.execute(f"ALTER TABLE user ADD COLUMN {col_def[0]} {col_def[1]}")
-                except Exception:
-                    pass
+                    cursor.execute(f"ALTER TABLE user ADD COLUMN {col_name} {col_type}")
+                except Exception as e:
+                    print(f"SQLite user migration error for {col_name}: {e}")
+        for col_name in ("email", "clerk_id"):
+            try:
+                cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_user_{col_name} ON user({col_name})")
+            except Exception as e:
+                print(f"SQLite user index error for {col_name}: {e}")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS bot_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -586,20 +593,10 @@ def sync_login_user(email=None, username=None, clerk_id=None):
                     user["clerk_id"] = clean_clerk_id
                     user["is_verified"] = verified_val
 
-        # 3. Lookup by username
-        if not user and clean_username:
-            cursor.execute(f"SELECT * FROM {u} WHERE username = {p}", (clean_username,))
-            row = cursor.fetchone()
-            if row:
-                user = dict(row)
-                verified_val = True if IS_POSTGRES else 1
-                if clean_clerk_id and user.get("clerk_id") != clean_clerk_id:
-                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {p} WHERE id = {p}", (clean_clerk_id, verified_val, user["id"]))
-                    conn.commit()
-                    user["clerk_id"] = clean_clerk_id
-                    user["is_verified"] = verified_val
+        # A username is only a display name, never proof of ownership: an
+        # existing account is linked by clerk_id or a Clerk-verified email only.
 
-        # 4. User does not exist in DB — auto create verified trading account
+        # 3. User does not exist in DB — auto create verified trading account
         if not user:
             import re
             raw_base = clean_username or (clean_email.split("@")[0] if clean_email else f"trader_{int(datetime.utcnow().timestamp())}")
@@ -1053,7 +1050,7 @@ def get_user_balance(user_id=1):
     u = get_user_table()
     cursor.execute(f"SELECT balance FROM {u} WHERE id = {p}", (user_id,))
     row = cursor.fetchone()
-    balance = row["balance"] if row else 1000000.0
+    balance = row["balance"] if row else 0.0
     conn.close()
     return balance
 
@@ -1804,7 +1801,7 @@ def list_conversations(user_id: Optional[int] = None, limit: int = 50) -> List[d
         cursor.execute(f"""
         SELECT id, user_id, title, selected_asset, selected_market, created_at, updated_at
         FROM conversations
-        WHERE user_id = {p} OR user_id IS NULL
+        WHERE user_id = {p}
         ORDER BY updated_at DESC
         LIMIT {int(limit)}
         """, (user_id,))

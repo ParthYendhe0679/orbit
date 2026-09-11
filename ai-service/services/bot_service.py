@@ -1,5 +1,5 @@
 """
-backend/services/bot_service.py — ORBIT Auto-Trade Bot engine.
+ai-service/services/bot_service.py — ORBIT Auto-Trade Bot engine.
 
 Division of labour
   * Go (backend/botsched) owns concurrency and scheduling: one goroutine per
@@ -28,23 +28,23 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-import backend.database as db
-from backend.models.bot import BotEventType, ENTRY_STATES, LIVE_STATES
-from backend.models.brain import BrainAnalysisContext
-from backend.models.decision import DecisionEvaluationResult
-from backend.models.opportunity import OpportunityEvaluationResult
-from backend.models.risk import RiskEvaluationResult
-from backend.services.market_data_service import POPULAR_SYMBOLS, market_service
-from backend.services.orbit_brain import orbit_brain
-from backend.services.risk_guard import risk_guard
-from backend.services.opportunity_engine import opportunity_engine
-from backend.services.decision_engine import decision_engine
-from backend.services.position_service import position_service
-from backend.services.valkey_service import valkey_service
-from backend.agents.chart_analyst import find_support_resistance
-from backend.agents.news_analyst import analyze_sentiment
-from backend.agents.risk_planner import plan_trade
-from backend.agents.portfolio_monitor import monitor_positions
+import database as db
+from models.bot import BotEventType, ENTRY_STATES, LIVE_STATES
+from models.brain import BrainAnalysisContext
+from models.decision import DecisionEvaluationResult
+from models.opportunity import OpportunityEvaluationResult
+from models.risk import RiskEvaluationResult
+from services.market_data_service import POPULAR_SYMBOLS, market_service
+from services.orbit_brain import orbit_brain
+from services.risk_guard import risk_guard
+from services.opportunity_engine import opportunity_engine
+from services.decision_engine import decision_engine
+from services.position_service import position_service
+from services.valkey_service import valkey_service
+from agents.chart_analyst import find_support_resistance
+from agents.news_analyst import analyze_sentiment
+from agents.risk_planner import plan_trade
+from agents.portfolio_monitor import monitor_positions
 
 logger = logging.getLogger("orbit.bot")
 

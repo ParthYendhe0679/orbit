@@ -1,5 +1,5 @@
 """
-backend/models/decision.py — ORBIT Phase 9 Decision Engine Data Contracts
+ai-service/models/decision.py — ORBIT Phase 9 Decision Engine Data Contracts
 
 Pydantic v2 schemas defining the standardized market stance decisions,
 decision clarity tiers, evidence confidence metrics, conflict structures,

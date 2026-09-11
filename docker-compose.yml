@@ -1,23 +1,42 @@
+# ORBIT — AI-Powered Trading Terminal
+#
+# Only the Go gateway is published on the host. The ai-service and the
+# orbit-stream hub are reachable on the compose network only; browsers reach
+# them through the gateway (/api, /ws, /ws/stream), which authenticates first.
+#
+# Required in .env: ORBIT_INTERNAL_TOKEN (containers are not loopback, so the
+# services trust each other only through this shared secret) and, to keep
+# sign-ins across gateway restarts, ORBIT_SESSION_SECRET (32+ characters).
 services:
   backend:
     build:
-      context: .
-      dockerfile: ./backend/Dockerfile
+      # backend/Dockerfile copies go.mod/go.sum from its own directory.
+      context: ./backend
+      dockerfile: Dockerfile
     image: mochatrade-backend:latest
     container_name: mochatrade_backend
     ports:
       - "8000:8000"
     volumes:
       - ./frontend:/app/frontend:ro
+    env_file:
+      - .env
     environment:
       - PORT=8000
       - AI_SERVICE_URL=http://ai-service:8001
+      - STREAM_SERVICE_URL=http://orbit-stream:8002
       - FRONTEND_PATH=/app/frontend
-      # Shared secret for gateway <-> ai-service /internal/* calls (bot scheduler,
-      # user-scoped event fan-out). Required here: containers are not loopback.
-      - ORBIT_INTERNAL_TOKEN=${ORBIT_INTERNAL_TOKEN:-}
+      - ORBIT_INTERNAL_TOKEN=${ORBIT_INTERNAL_TOKEN:?set ORBIT_INTERNAL_TOKEN in .env}
     depends_on:
-      - ai-service
+      ai-service:
+        condition: service_healthy
+      orbit-stream:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
 
   ai-service:
@@ -35,11 +54,19 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
-      - STREAM_HUB_URL=http://orbit-stream:8001/publish
+      - STREAM_HUB_URL=http://orbit-stream:8002/publish
       - GATEWAY_INTERNAL_URL=http://backend:8000
-      - ORBIT_INTERNAL_TOKEN=${ORBIT_INTERNAL_TOKEN:-}
+      - ORBIT_INTERNAL_TOKEN=${ORBIT_INTERNAL_TOKEN:?set ORBIT_INTERNAL_TOKEN in .env}
     depends_on:
-      - orbit-stream
+      orbit-stream:
+        condition: service_started
+    healthcheck:
+      # Neon / Aiven TLS cold starts make the first probe slow.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=8)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
     restart: unless-stopped
 
   orbit-stream:
@@ -48,8 +75,10 @@ services:
       dockerfile: Dockerfile
     image: orbit-stream:latest
     container_name: orbit_stream_hub
-    ports:
-      - "8001:8001"
+    # Internal port 8002 (8000 = gateway, 8001 = ai-service); not published.
+    expose:
+      - "8002"
     environment:
-      - PORT=8001
+      - PORT=8002
+      - ORBIT_INTERNAL_TOKEN=${ORBIT_INTERNAL_TOKEN:?set ORBIT_INTERNAL_TOKEN in .env}
     restart: unless-stopped

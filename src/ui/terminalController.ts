@@ -270,12 +270,15 @@ export function confirmTrade(): void {
     const modal = getElement("trade-confirm-modal");
     if (modal) modal.classList.add("hidden");
 
+    const signal = store.get("pendingSignal");
     store.sockets.sendPrimaryAction({
-        action: "confirm_trade"
+        action: "confirm_trade",
+        trade_id: signal && signal.trade_id !== null ? signal.trade_id : undefined
     });
+    store.set("pendingSignal", null);
 
     if (typeof (window as any).logToTerminal === "function") {
-        (window as any).logToTerminal("Execution Agent", "Trade confirmed by user. Dispatching order to exchange...");
+        (window as any).logToTerminal("Execution Agent", "Trade confirmed by user. Filling the proposed order...");
     }
 }
 
@@ -286,9 +289,12 @@ export function rejectTrade(): void {
     const modal = getElement("trade-confirm-modal");
     if (modal) modal.classList.add("hidden");
 
+    const signal = store.get("pendingSignal");
     store.sockets.sendPrimaryAction({
-        action: "reject_trade"
+        action: "cancel_trade",
+        trade_id: signal && signal.trade_id !== null ? signal.trade_id : undefined
     });
+    store.set("pendingSignal", null);
 
     if (typeof (window as any).logToTerminal === "function") {
         (window as any).logToTerminal("Risk Guard", "Trade rejected by user. Safety constraints enforced.");

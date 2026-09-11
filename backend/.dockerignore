@@ -1,0 +1,5 @@
+*.exe
+bin/
+*_test.go
+readapi/testdata/
+README.md

@@ -1,6 +1,6 @@
 /**
  * ORBIT Trading Terminal — Real-Time WebSocket Message Contracts
- * Handles bidirectional frames from Python FastAPI (:8000/ws) and Go Stream Hub (:8001/ws)
+ * Frames on the gateway's private /ws channel and the public /ws/stream tick stream
  */
 
 import { Position, ClosedTrade } from "./trading";
@@ -28,10 +28,13 @@ export type WebSocketEventType =
     | "autotrade_status"
     | "bot_event"
     | "bot_session_updated"
+    | "history"
+    | "system_status"
     | "auth_error";
 
 export interface WSTickMessage {
     type: "tick" | "price_update";
+    symbol?: string;
     candle?: OHLCV;
     changePercent?: number;
     data?: {
@@ -137,7 +140,8 @@ export type WebSocketInboundMessage =
     | WSAuthErrorMessage;
 
 export interface WebSocketOutboundAction {
-    action: "start" | "stop" | "analyze" | "ping" | "cancel_trade" | "confirm_trade" | "reject_trade";
+    action: "start" | "stop" | "cancel_trade" | "confirm_trade" | "reject_trade";
+    asset?: string;
     symbol?: string;
     timeframe?: string;
     trade_id?: number;

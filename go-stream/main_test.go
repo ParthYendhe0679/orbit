@@ -24,22 +24,28 @@ func TestHealthHandler(t *testing.T) {
 	}
 }
 
+func publish(h http.Handler, method string, body []byte, mutate func(*http.Request)) int {
+	req := httptest.NewRequest(method, "/publish", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:5000"
+	if mutate != nil {
+		mutate(req)
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr.Code
+}
+
 func TestPublishHandler_ValidJSON(t *testing.T) {
 	hub := newHub()
-	handler := publishHandler(hub)
-
 	payload := []byte(`{"type":"tick","candle":{"close":65000.5,"time":1710000000}}`)
-	req := httptest.NewRequest(http.MethodPost, "/publish", bytes.NewReader(payload))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
 
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusNoContent {
+	if status := publish(publishHandler(hub, "tok"), http.MethodPost, payload, func(r *http.Request) {
+		r.Header.Set("X-Orbit-Internal-Token", "tok")
+	}); status != http.StatusNoContent {
 		t.Fatalf("publishHandler with valid JSON returned wrong status code: got %v want %v", status, http.StatusNoContent)
 	}
 
-	// Verify the hub received the message on its broadcast channel
 	select {
 	case msg := <-hub.broadcast:
 		if !bytes.Equal(msg, payload) {
@@ -50,32 +56,47 @@ func TestPublishHandler_ValidJSON(t *testing.T) {
 	}
 }
 
+func TestPublishHandler_RequiresTheSharedToken(t *testing.T) {
+	hub := newHub()
+	h := publishHandler(hub, "tok")
+	payload := []byte(`{"type":"tick"}`)
+	cases := map[string]func(*http.Request){
+		"missing token": nil,
+		"wrong token":   func(r *http.Request) { r.Header.Set("X-Orbit-Internal-Token", "nope") },
+		"browser origin": func(r *http.Request) {
+			r.Header.Set("X-Orbit-Internal-Token", "tok")
+			r.Header.Set("Origin", "http://evil.example")
+		},
+	}
+	for name, mut := range cases {
+		if status := publish(h, http.MethodPost, payload, mut); status != http.StatusForbidden {
+			t.Errorf("%s: status %d, want 403", name, status)
+		}
+	}
+	if len(hub.broadcast) != 0 {
+		t.Fatal("an unauthorized frame was broadcast")
+	}
+
+	noToken := publishHandler(hub, "")
+	if status := publish(noToken, http.MethodPost, payload, nil); status != http.StatusNoContent {
+		t.Fatalf("loopback without token configured: %d", status)
+	}
+	if status := publish(noToken, http.MethodPost, payload, func(r *http.Request) { r.RemoteAddr = "10.0.0.9:1" }); status != http.StatusForbidden {
+		t.Fatalf("remote without token configured: %d", status)
+	}
+}
+
 func TestPublishHandler_InvalidJSON(t *testing.T) {
 	hub := newHub()
-	handler := publishHandler(hub)
-
-	invalidPayload := []byte(`{"type":"tick", invalid json`)
-	req := httptest.NewRequest(http.MethodPost, "/publish", bytes.NewReader(invalidPayload))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusBadRequest {
+	status := publish(publishHandler(hub, ""), http.MethodPost, []byte(`{"type":"tick", invalid json`), nil)
+	if status != http.StatusBadRequest {
 		t.Fatalf("publishHandler with invalid JSON returned wrong status code: got %v want %v", status, http.StatusBadRequest)
 	}
 }
 
 func TestPublishHandler_MethodNotAllowed(t *testing.T) {
 	hub := newHub()
-	handler := publishHandler(hub)
-
-	req := httptest.NewRequest(http.MethodGet, "/publish", nil)
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if status := rr.Code; status != http.StatusMethodNotAllowed {
+	if status := publish(publishHandler(hub, ""), http.MethodGet, nil, nil); status != http.StatusMethodNotAllowed {
 		t.Fatalf("publishHandler with GET method returned wrong status code: got %v want %v", status, http.StatusMethodNotAllowed)
 	}
 }

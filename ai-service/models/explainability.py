@@ -1,5 +1,5 @@
 """
-backend/models/explainability.py — ORBIT Phase 10 Explainability & Insight Engine Data Contracts
+ai-service/models/explainability.py — ORBIT Phase 10 Explainability & Insight Engine Data Contracts
 
 Pydantic v2 schemas defining structured, traceable, human-understandable market insights,
 evidence categorization, conflict analysis, and plain-English market stance explanations.
@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
-from backend.models.decision import DecisionClarity, MarketStance
+from models.decision import DecisionClarity, MarketStance
 
 
 class SourceSubsystem(str, Enum):

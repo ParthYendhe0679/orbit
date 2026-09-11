@@ -9,7 +9,6 @@ supplied by the test, so every scenario is deterministic.
 """
 
 import asyncio
-import filecmp
 import sys
 import threading
 import time
@@ -18,20 +17,22 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: F401
+
+from conftest import GatewayClient
 
 import main  # ai-service/main.py (see conftest.py for isolation)
-from backend.models.bot import LIVE_STATES, ENTRY_STATES, TERMINAL_STATES
-from backend.models.decision import DecisionClarity, DecisionStatus, MarketStance
-from backend.models.market import MarketQuote
-from backend.models.opportunity import OpportunityLevel, OpportunityStatus
-from backend.models.risk import RiskLevel, RiskStatus
-from backend.models.brain import BrainStatus
-from backend.services.bot_service import BotEngine, BotPolicy
-from backend.services.decision_engine import decision_engine
-from backend.services.opportunity_engine import opportunity_engine
-from backend.services.orbit_brain import orbit_brain
-from backend.services.risk_guard import risk_guard
+from models.bot import LIVE_STATES, ENTRY_STATES, TERMINAL_STATES
+from models.decision import DecisionClarity, DecisionStatus, MarketStance
+from models.market import MarketQuote
+from models.opportunity import OpportunityLevel, OpportunityStatus
+from models.risk import RiskLevel, RiskStatus
+from models.brain import BrainStatus
+from services.bot_service import BotEngine, BotPolicy
+from services.decision_engine import decision_engine
+from services.opportunity_engine import opportunity_engine
+from services.orbit_brain import orbit_brain
+from services.risk_guard import risk_guard
 
 db = main.db
 ROOT = Path(__file__).resolve().parents[1]
@@ -128,7 +129,8 @@ def engine(app_env):
 
 @pytest.fixture
 def client(app_env):
-    return TestClient(main.app)
+    # Requests arrive as the Go gateway forwards them (token + verified account).
+    return GatewayClient(main.app)
 
 
 def run(coro):
@@ -587,7 +589,7 @@ def test_bot_events_stream_over_websocket(app_env, monkeypatch):
     monkeypatch.setattr(main.app.router, "lifespan_context", _no_lifespan)
     monkeypatch.setattr(main.bot_engine, "publish", main.publish_to_user)  # the real delivery path
     uid = new_user("abby")
-    with TestClient(main.app) as c:
+    with GatewayClient(main.app) as c:
         with c.websocket_connect(f"/ws?user_id={uid}") as ws:
             initial = [ws.receive_json()["type"] for _ in range(4)]
             assert initial == ["wallet", "positions", "history_trades", "dashboard_summary"]
@@ -701,7 +703,7 @@ def test_internal_endpoints_require_the_shared_token(client):
 
 
 def test_pnl_manager_ignores_unset_stop_and_target(app_env, client):
-    from backend.agents.portfolio_monitor import monitor_positions
+    from agents.portfolio_monitor import monitor_positions
     uid = new_user("hugo")
     tid = client.post("/api/trade/open", json={"user_id": uid, "symbol": "BTC-USD", "side": "BUY", "quantity": 1}).json()["trade_id"]
     monitor_positions(101.0, None, uid, "BTC-USD")
@@ -713,11 +715,3 @@ def test_state_constants_match_the_enum():
     assert set(db.BOT_LIVE_STATUSES) == {s.value for s in LIVE_STATES}
     assert set(db.BOT_TERMINAL_STATUSES) == {s.value for s in TERMINAL_STATES}
 
-
-@pytest.mark.parametrize("rel", [
-    "services/bot_service.py", "services/risk_guard.py", "services/position_service.py",
-    "services/valkey_service.py", "models/bot.py", "models/risk.py",
-])
-def test_backend_mirror_matches_ai_service(rel):
-    # backend.services / backend.models resolve to the backend/ copies at runtime.
-    assert filecmp.cmp(ROOT / "ai-service" / rel, ROOT / "backend" / rel, shallow=False), rel

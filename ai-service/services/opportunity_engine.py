@@ -1,5 +1,5 @@
 """
-backend/services/opportunity_engine.py — ORBIT Trade Opportunity Evaluation Engine (Phase 8).
+ai-service/services/opportunity_engine.py — ORBIT Trade Opportunity Evaluation Engine (Phase 8).
 
 Centralized, deterministic, explainable, and modular trade opportunity evaluation system.
 Synthesizes intelligence from:
@@ -22,14 +22,14 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backend.models.brain import (
+from models.brain import (
     BrainAnalysisContext,
     BrainStatus,
     CompletenessTier,
 )
-from backend.models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
-from backend.models.risk import RiskEvaluationResult, RiskLevel, RiskStatus
-from backend.models.opportunity import (
+from models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
+from models.risk import RiskEvaluationResult, RiskLevel, RiskStatus
+from models.opportunity import (
     FactorImpact,
     OpportunityDiagnostics,
     OpportunityDimension,
@@ -39,8 +39,8 @@ from backend.models.opportunity import (
     OpportunityLevel,
     OpportunityStatus,
 )
-from backend.services.orbit_brain import OrbitBrain, orbit_brain
-from backend.services.risk_guard import RiskGuard, risk_guard
+from services.orbit_brain import OrbitBrain, orbit_brain
+from services.risk_guard import RiskGuard, risk_guard
 
 logger = logging.getLogger("orbit.opportunity_engine")
 

@@ -1,5 +1,5 @@
 """
-backend/models/copilot.py — Pydantic Schemas for ORBIT AI Market Intelligence Copilot.
+ai-service/models/copilot.py — Pydantic Schemas for ORBIT AI Market Intelligence Copilot.
 
 Defines validated contracts for user chat messages, categorized intent classification,
 structured analytical context summaries, and verified Copilot responses.

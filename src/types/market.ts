@@ -1,17 +1,22 @@
 /**
- * ORBIT Trading Terminal — Market Data & Indicator Types
- * Matches backend/models/market.py and market service endpoints
+ * ORBIT Trading Terminal — Market Data Types
+ * Matches ai-service models/market.py and the /api/market/* and /api/news* endpoints.
  */
 
 export interface MarketQuote {
     symbol: string;
     price: number;
-    change_24h: number;
+    open?: number;
+    high?: number;
+    low?: number;
+    close?: number;
+    previous_close?: number;
+    change?: number;
     change_percent: number;
-    high_24h: number;
-    low_24h: number;
-    volume_24h: number;
+    volume?: number;
     timestamp: string;
+    source?: string;
+    is_stale?: boolean;
 }
 
 export interface OHLCV {
@@ -20,37 +25,38 @@ export interface OHLCV {
     high: number;
     low: number;
     close: number;
-    volume: number;
+    volume?: number;
 }
 
-export interface MarketDataStats {
+/** data of GET /api/market/history */
+export interface MarketHistorySnapshot {
     symbol: string;
-    current_price: number;
-    sma_20?: number;
-    ema_50?: number;
-    ema_200?: number;
-    rsi_14?: number;
-    atr_14?: number;
-    volatility_pct?: number;
-    trend_bias?: "BULLISH" | "BEARISH" | "NEUTRAL";
-}
-
-export interface MarketHistoryResponse {
-    symbol: string;
-    timeframe: string;
     count: number;
     candles: OHLCV[];
+    quote?: MarketQuote;
+    data_age_seconds?: number;
 }
 
-export interface NewsArticle {
+/** One headline of GET /api/news and /api/news/global. */
+export interface NewsHeadline {
     title: string;
-    description?: string;
+    link: string;
     source: string;
-    url: string;
-    published_at: string;
+    published: string;
     sentiment: "bullish" | "bearish" | "neutral";
-    sentiment_score?: number;
-    symbols?: string[];
+}
+
+export interface NewsResponse {
+    headlines: NewsHeadline[];
+    count: number;
+    symbol: string;
+}
+
+export interface SymbolSearchResult {
+    symbol: string;
+    name: string;
+    exchange?: string;
+    type?: string;
 }
 
 export interface SupportResistanceLevels {

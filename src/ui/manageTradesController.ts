@@ -7,7 +7,8 @@ import { tradingService } from "../services/tradingService";
 import { portfolioService } from "../services/portfolioService";
 import { store } from "../state/store";
 import { Position, PendingOrder, ClosedTrade } from "../types/trading";
-import { esc, formatINR } from "../utils/formatters";
+import { esc, formatINR, formatINRSafe } from "../utils/formatters";
+import { DashboardSummary } from "../types/portfolio";
 import { safeText, getElement } from "../utils/dom";
 import { _botActiveTradesCache, refreshBotControlCenter } from "./autoBotController";
 
@@ -120,6 +121,7 @@ export async function refreshAllData(btnElement?: HTMLElement): Promise<void> {
             loadOpenTrades(),
             loadPendingOrders(),
             loadTradeHistoryPage(store.get("historyPage") || 0),
+            loadOverviewHistory(),
             typeof (window as any).fetchGlobalNews === "function" ? (window as any).fetchGlobalNews() : Promise.resolve()
         ]);
 
@@ -180,7 +182,7 @@ export async function loadOpenTrades(): Promise<void> {
     const overviewActiveEl = getElement("overview-active-trades");
 
     try {
-        const userId = store.get("currentUserId") || 1;
+        const userId = store.get("currentUserId");
         const positions = await tradingService.getOpenPositions(userId);
         store.set("openTrades", positions);
 
@@ -258,7 +260,7 @@ export async function loadPendingOrders(): Promise<void> {
     const countBadge = getElement("manage-pending-count");
 
     try {
-        const userId = store.get("currentUserId") || 1;
+        const userId = store.get("currentUserId");
         const orders = await tradingService.getPendingOrders(userId);
         store.set("pendingOrders", orders);
 
@@ -351,9 +353,9 @@ export async function loadTradeHistoryPage(page?: number): Promise<void> {
     const offset = currentPage * limit;
 
     try {
-        const userId = store.get("currentUserId") || 1;
+        const userId = store.get("currentUserId");
         const res = await tradingService.getTradeHistory({
-            user_id: userId,
+            user_id: userId ?? undefined,
             limit,
             offset,
             symbol: search || undefined,
@@ -640,14 +642,14 @@ export async function executePositionClose(): Promise<void> {
     if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
 
     try {
-        const uid = store.get("currentUserId") || localStorage.getItem("orbit_user_id") || 1;
+        const uid = store.get("currentUserId");
         let realizedPnl = 0;
         if (isFullClose) {
             const res = await tradingService.closePositionFull(tradeId, uid);
-            realizedPnl = res.realized_pnl;
+            realizedPnl = Number(res.realized_pnl ?? 0);
         } else {
             const res = await tradingService.closePositionPartial(tradeId, closeQty, uid);
-            realizedPnl = res.realized_pnl;
+            realizedPnl = Number(res.realized_pnl ?? 0);
         }
 
         // Close modal
@@ -678,39 +680,84 @@ export async function executePositionClose(): Promise<void> {
 }
 
 /**
- * Fetches dashboard summary and updates KPI cards.
+ * Renders the authoritative account summary (GET /api/dashboard/summary or the
+ * WebSocket "dashboard_summary" push — the same contract either way).
+ */
+export function renderDashboardSummary(summary: DashboardSummary | null | undefined): void {
+    if (!summary || !summary.account || !summary.trading) return;
+    store.set("dashboardSummary", summary);
+    const { account, trading } = summary;
+
+    safeText(getElement("overview-balance"), formatINRSafe(account.total_capital));
+    store.set("walletBalance", Number.isFinite(account.available_balance) ? account.available_balance : null);
+    safeText(getElement("wallet-balance"), formatINRSafe(account.available_balance));
+    safeText(getElement("copilot-account-balance"), formatINRSafe(account.available_balance));
+    safeText(getElement("overview-active-trades"), String(trading.active_trades ?? 0));
+
+    const setPnl = (id: string, value: number) => {
+        const el = getElement(id);
+        if (!el) return;
+        el.textContent = (value >= 0 ? "+" : "") + formatINR(value);
+        el.className = "stat-value " + (value >= 0 ? "text-green" : "text-red");
+    };
+    setPnl("overview-unrealized-pnl", Number(trading.unrealized_pnl) || 0);
+    setPnl("overview-realized-pnl", Number(trading.realized_pnl) || 0);
+
+    const winRateEl = getElement("overview-win-rate");
+    const bar = getElement("overview-winrate-bar");
+    if (trading.win_rate !== null && trading.win_rate !== undefined && trading.total_closed_trades > 0) {
+        if (winRateEl) winRateEl.textContent = `${Number(trading.win_rate).toFixed(1)}%`;
+        if (bar) bar.style.width = `${Math.min(100, Math.max(0, Number(trading.win_rate)))}%`;
+    } else {
+        if (winRateEl) winRateEl.textContent = "—";
+        if (bar) bar.style.width = "0%";
+    }
+    safeText(getElement("overview-win-loss-text"), `${trading.winning_trades_count ?? 0} Wins | ${trading.losing_trades_count ?? 0} Losses`);
+}
+
+/**
+ * Fetches the dashboard summary and updates the KPI cards.
  */
 export async function fetchDashboardSummary(): Promise<void> {
     try {
-        const userId = store.get("currentUserId") || 1;
-        const summary = await portfolioService.getDashboardSummary(userId);
-        store.set("dashboardSummary", summary);
-
-        safeText(getElement("overview-equity"), formatINR(summary.equity));
-        safeText(getElement("overview-cash-balance"), formatINR(summary.balance));
-        safeText(getElement("overview-used-margin"), formatINR(summary.used_margin));
-        safeText(getElement("wallet-balance"), formatINR(summary.balance));
-
-        const uPnl = summary.unrealized_pnl ?? summary.total_unrealized_pnl;
-        const rPnl = summary.realized_pnl ?? summary.total_realized_pnl;
-
-        const pnlEl = getElement("overview-unrealized-pnl");
-        if (pnlEl) {
-            pnlEl.textContent = (uPnl >= 0 ? "+" : "") + formatINR(uPnl);
-            pnlEl.className = uPnl >= 0 ? "metric-val text-green" : "metric-val text-red";
-        }
-
-        const realizedEl = getElement("overview-realized-pnl");
-        if (realizedEl) {
-            realizedEl.textContent = (rPnl >= 0 ? "+" : "") + formatINR(rPnl);
-            realizedEl.className = rPnl >= 0 ? "metric-val text-green" : "metric-val text-red";
-        }
-
-        const winRateEl = getElement("overview-win-rate");
-        if (winRateEl) {
-            winRateEl.textContent = summary.win_rate !== null && summary.win_rate !== undefined ? `${summary.win_rate.toFixed(1)}%` : "—";
-        }
+        renderDashboardSummary(await portfolioService.getDashboardSummary(store.get("currentUserId")));
     } catch (err) {
         console.error("[Dashboard] Error fetching summary:", err);
+    }
+}
+
+/**
+ * The dashboard's recent-trades panel: the ten latest closed trades.
+ */
+export async function loadOverviewHistory(): Promise<void> {
+    const list = getElement("overview-history-list");
+    const count = getElement("overview-history-count");
+    if (!list && !count) return;
+    try {
+        const res = await tradingService.getTradeHistory({ user_id: store.get("currentUserId") ?? undefined, limit: 10, offset: 0 });
+        if (count) count.textContent = `${res.total} trade${res.total === 1 ? "" : "s"}`;
+        if (!list) return;
+        if (!res.trades.length) {
+            list.innerHTML = `<div class="crew-history-empty"><i class="fa-solid fa-hourglass-half"></i><p>No completed trades yet</p></div>`;
+            return;
+        }
+        list.innerHTML = res.trades.map((t: ClosedTrade) => {
+            const pnl = Number(t.realized_pnl ?? t.pnl ?? 0);
+            const isBuy = String(t.type || "").toLowerCase() === "buy";
+            const outcome = t.outcome === "target" ? "TP" : t.outcome === "cancelled" ? "CX" : t.outcome === "sl" ? "SL" : "MC";
+            const time = t.closed_at || t.timestamp;
+            return `
+                <div class="crew-history-item">
+                    <div class="chi-direction ${isBuy ? "buy" : "sell"}">${isBuy ? "▲" : "▼"}</div>
+                    <div class="chi-details">
+                        <div class="chi-asset">${esc(t.symbol || t.asset || "—")}</div>
+                        <div class="chi-time">${time ? new Date(time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</div>
+                    </div>
+                    <span class="chi-pnl ${pnl >= 0 ? "text-green" : "text-red"}">${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</span>
+                    <span class="chi-outcome ${t.outcome === "target" ? "target" : "stop"}">${outcome}</span>
+                </div>`;
+        }).join("");
+    } catch (err) {
+        console.warn("[Dashboard] Recent trades unavailable:", err);
     }
 }

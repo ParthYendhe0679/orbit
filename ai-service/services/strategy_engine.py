@@ -13,15 +13,15 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from backend.models.strategy import (
+from models.strategy import (
     StrategyCategory,
     StrategyOrchestrationResult,
     StrategyResult,
     StrategySignal,
     StrategyStatus,
 )
-from backend.services.market_data_service import market_service
-from backend.agents.chart_analyst import find_support_resistance
+from services.market_data_service import market_service
+from agents.chart_analyst import find_support_resistance
 
 
 # ---------------------------------------------------------------------------

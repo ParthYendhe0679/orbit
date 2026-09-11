@@ -6,8 +6,9 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o orbit-stream .
 
-FROM alpine:latest
+FROM alpine:3.20
 WORKDIR /app
 COPY --from=builder /app/orbit-stream .
-EXPOSE 8001
-CMD ["./orbit-stream", "--port", "8001"]
+# Internal only: browsers subscribe through the gateway's /ws/stream.
+EXPOSE 8002
+CMD ["./orbit-stream", "--port", "8002"]

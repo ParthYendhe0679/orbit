@@ -5,7 +5,6 @@ import io
 import json
 import logging
 import os
-import random
 import time
 import traceback
 import uuid
@@ -21,89 +20,51 @@ import yfinance as yf
 import pandas as pd
 
 import sys
-# Ensure ai-service and parent directories are in sys.path
+# ai-service/ is the package root: database, models.*, services.*, agents.*.
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _parent_dir = os.path.abspath(os.path.join(_current_dir, ".."))
-for _p in (_current_dir, _parent_dir):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-try:
-    import backend
-    if hasattr(backend, "__path__") and _current_dir not in backend.__path__:
-        backend.__path__.append(_current_dir)
-except ImportError:
-    pass
+if _current_dir not in sys.path:
+    sys.path.insert(0, _current_dir)
 
 # Load .env before anything reads os.environ (news/LLM keys, DATABASE_URL).
 load_dotenv(os.path.join(_parent_dir, ".env"))
 load_dotenv(os.path.join(_current_dir, ".env"))
 load_dotenv()
 
-try:
-    import backend.database as db
-    import backend.reporting as reporting
-    from backend.services.market_data_service import market_service
-    from backend.services.agent_orchestrator import agent_orchestrator
-    from backend.services.strategy_engine import strategy_engine
-    from backend.services.consensus_engine import consensus_engine
-    from backend.services.orbit_brain import orbit_brain
-    from backend.services.risk_guard import risk_guard
-    from backend.services.opportunity_engine import opportunity_engine
-    from backend.services.decision_engine import decision_engine
-    from backend.services.explainability_engine import explainability_engine
-    from backend.services.copilot_service import copilot_service
-    from backend.services.position_service import position_service
-    from backend.services.valkey_service import valkey_service
-    from backend.services.bot_service import BotEngine, BotConfigError, market_universe, validate_bot_config
-    from backend.models.bot import BotStartRequest, BotStopRequest
-    from backend.models.copilot import CopilotChatRequest, ConversationCreate
-    from backend.agents.chart_analyst import find_support_resistance
-    from backend.agents.indicator_analyst import analyze_indicators
-    from backend.agents.news_analyst import analyze_sentiment
-    from backend.agents.momentum_candle_analyst import analyze_momentum_candles
-    from backend.agents.ema_ribbon_analyst import analyze_ema_ribbon
-    from backend.agents.volatility_analyst import analyze_volatility
-    from backend.agents.volume_flow_analyst import analyze_volume_flow
-    from backend.agents.mtf_trend_analyst import analyze_mtf_trend
-    from backend.agents.strategy_judge import evaluate_strategies
-    from backend.agents.risk_planner import plan_trade
-    from backend.agents.execution_agent import check_and_execute_trades
-    from backend.agents.portfolio_monitor import monitor_positions
-except ImportError:
-    import database as db
-    import reporting as reporting
-    from services.market_data_service import market_service
-    from services.agent_orchestrator import agent_orchestrator
-    from services.strategy_engine import strategy_engine
-    from services.consensus_engine import consensus_engine
-    from services.orbit_brain import orbit_brain
-    from services.risk_guard import risk_guard
-    from services.opportunity_engine import opportunity_engine
-    from services.decision_engine import decision_engine
-    from services.explainability_engine import explainability_engine
-    from services.copilot_service import copilot_service
-    from services.position_service import position_service
-    from services.valkey_service import valkey_service
-    from services.bot_service import BotEngine, BotConfigError, market_universe, validate_bot_config
-    from models.bot import BotStartRequest, BotStopRequest
-    from models.copilot import CopilotChatRequest, ConversationCreate
-    from agents.chart_analyst import find_support_resistance
-    from agents.indicator_analyst import analyze_indicators
-    from agents.news_analyst import analyze_sentiment
-    from agents.momentum_candle_analyst import analyze_momentum_candles
-    from agents.ema_ribbon_analyst import analyze_ema_ribbon
-    from agents.volatility_analyst import analyze_volatility
-    from agents.volume_flow_analyst import analyze_volume_flow
-    from agents.mtf_trend_analyst import analyze_mtf_trend
-    from agents.strategy_judge import evaluate_strategies
-    from agents.risk_planner import plan_trade
-    from agents.execution_agent import check_and_execute_trades
-    from agents.portfolio_monitor import monitor_positions
+import database as db
+import reporting as reporting
+from services.market_data_service import market_service
+from services.agent_orchestrator import agent_orchestrator
+from services.strategy_engine import strategy_engine
+from services.consensus_engine import consensus_engine
+from services.orbit_brain import orbit_brain
+from services.risk_guard import risk_guard
+from services.opportunity_engine import opportunity_engine
+from services.decision_engine import decision_engine
+from services.explainability_engine import explainability_engine
+from services.copilot_service import copilot_service
+from services.position_service import position_service
+from services.valkey_service import valkey_service
+from services.bot_service import BotEngine, BotConfigError, market_universe, validate_bot_config
+from models.bot import BotStartRequest, BotStopRequest
+from models.copilot import CopilotChatRequest, ConversationCreate
+from agents.chart_analyst import find_support_resistance
+from agents.indicator_analyst import analyze_indicators
+from agents.news_analyst import analyze_sentiment
+from agents.momentum_candle_analyst import analyze_momentum_candles
+from agents.ema_ribbon_analyst import analyze_ema_ribbon
+from agents.volatility_analyst import analyze_volatility
+from agents.volume_flow_analyst import analyze_volume_flow
+from agents.mtf_trend_analyst import analyze_mtf_trend
+from agents.strategy_judge import evaluate_strategies
+from agents.risk_planner import plan_trade
+from agents.execution_agent import check_and_execute_trades
+from agents.portfolio_monitor import monitor_positions
+from gateway_auth import GatewayIdentityMiddleware, gateway_user_id, gateway_clerk_id
 
 logger = logging.getLogger("orbit.main")
 
-# Seconds between price ticks in the live simulation loop.
+# Seconds between ticks of the terminal's live analysis loop.
 TICK_INTERVAL_SECONDS = 4
 
 # Go gateway (backend/) — Auto-Trade Bot scheduling and user-scoped event
@@ -115,27 +76,30 @@ INTERNAL_TOKEN = os.getenv("ORBIT_INTERNAL_TOKEN", "").strip()
 # ---------------------------------------------------------------------------
 # Phase 11 — orbit-stream Go hub integration
 # ---------------------------------------------------------------------------
-# URL of the Go WebSocket broadcast hub.  Python publishes high-frequency tick
-# and metrics payloads here; the hub fans them out to all browser clients with
-# goroutine-level concurrency.  If the hub is not running the helper silently
-# drops the frame — the Python path continues to work as before.
-STREAM_HUB_URL = os.getenv("STREAM_HUB_URL", "http://127.0.0.1:8001/publish")
+# URL of the orbit-stream Go hub. The market tick scheduler publishes real
+# quotes here; the hub fans them out to every browser through the gateway's
+# /ws/stream. If the hub is down the frame is dropped; per-user sockets still
+# receive their own updates from this service.
+STREAM_HUB_URL = os.getenv("STREAM_HUB_URL", "http://127.0.0.1:8002/publish")
 
 def publish_tick(payload: dict) -> bool:
     """Fire-and-forget: POST a JSON payload to the orbit-stream Go hub.
 
-    Runs synchronously (called from asyncio.to_thread).  A 50 ms timeout
-    ensures a stalled hub never blocks the pipeline tick loop.
-    Returns True if accepted by the Go hub, False otherwise.
+    Runs synchronously (called from asyncio.to_thread). A 50 ms timeout
+    ensures a stalled hub never blocks the tick loop. The shared internal
+    token authenticates the publisher. Returns True if the hub accepted it.
     """
     try:
         import urllib.request, json as _json
         data = _json.dumps(payload).encode()
+        headers = {"Content-Type": "application/json"}
+        if INTERNAL_TOKEN:
+            headers["X-Orbit-Internal-Token"] = INTERNAL_TOKEN
         req = urllib.request.Request(
             STREAM_HUB_URL,
             data=data,
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=0.05) as resp:
             return resp.status in (200, 204)
@@ -148,11 +112,10 @@ async def lifespan(app: FastAPI):
     # Startup: prepare the schema, initialize Valkey, log validation
     db.init_db()
     valkey_connected = valkey_service.connect()
-    print("DATABASE: CONNECTED", flush=True)
-    print("VALKEY: " + ("CONNECTED" if valkey_connected else "DEGRADED_FALLBACK"), flush=True)
-    print("TLS: ENABLED", flush=True)
-    print("MARKET SERVICE: READY", flush=True)
-    print("WEBSOCKET: READY", flush=True)
+    print("DATABASE: " + ("POSTGRESQL" if db.IS_POSTGRES else "SQLITE (local fallback)"), flush=True)
+    print("VALKEY: " + ("CONNECTED" if valkey_connected else "DEGRADED_FALLBACK (in-memory)"), flush=True)
+    if not INTERNAL_TOKEN:
+        print("GATEWAY TRUST: ORBIT_INTERNAL_TOKEN not set; only loopback callers are trusted", flush=True)
 
     # The Auto-Trade Bot has no loop here: the Go gateway's scheduler
     # (backend/botsched) drives it through the /internal/bot/* step endpoints.
@@ -169,6 +132,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+# Private routes and /ws only accept identities forwarded by the Go gateway
+# (see gateway_auth.py).
+app.add_middleware(GatewayIdentityMiddleware)
 
 @app.middleware("http")
 async def add_no_cache_header(request, call_next):
@@ -183,6 +149,8 @@ async def add_no_cache_header(request, call_next):
 @app.get("/", response_class=HTMLResponse)
 async def serve_root():
     index_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"))
+    if not os.path.isfile(index_file):
+        raise HTTPException(status_code=404, detail="The frontend is served by the Go gateway.")
     with open(index_file, "r", encoding="utf-8") as f:
         content = f.read()
     response = HTMLResponse(content=content)
@@ -558,36 +526,45 @@ async def api_copilot_chat(req: CopilotChatRequest):
     try:
         response = await copilot_service.chat(req)
         return {"ok": True, "data": response.model_dump()}
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Copilot inference error: {str(exc)}")
 
 
 @app.get("/api/chat/conversations")
-async def api_list_conversations(user_id: Optional[int] = None, limit: int = 50):
-    """List stored chat conversations for the history sidebar."""
+async def api_list_conversations(request: Request, limit: int = 50):
+    """List the signed-in user's chat conversations for the history sidebar."""
     try:
-        conversations = db.list_conversations(user_id=user_id, limit=limit)
+        conversations = await asyncio.to_thread(db.list_conversations, gateway_user_id(request), max(1, min(200, limit)))
         return {"ok": True, "data": conversations}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(exc)}")
 
 
+def _owned_conversation(conversation_id: str, uid: Optional[int]) -> Optional[dict]:
+    """The conversation when it belongs to uid; None when missing or someone else's."""
+    conv = db.get_conversation((conversation_id or "").strip())
+    if not conv or uid is None or conv.get("user_id") != uid:
+        return None
+    return conv
+
+
 @app.post("/api/chat/conversations")
-async def api_create_conversation(payload: Optional[ConversationCreate] = None):
-    """Create a new conversation session."""
+async def api_create_conversation(request: Request, payload: Optional[ConversationCreate] = None):
+    """Create a new conversation owned by the signed-in user."""
     try:
         cid = str(uuid.uuid4())
         title = payload.title if payload and payload.title else "New Analysis"
         asset = payload.selected_asset if payload and payload.selected_asset else ""
         market = payload.selected_market if payload and payload.selected_market else "US Stocks"
-        user_id = payload.user_id if payload else None
-
-        conv = db.create_conversation(
+        conv = await asyncio.to_thread(
+            db.create_conversation,
             conversation_id=cid,
             title=title,
             selected_asset=asset,
             selected_market=market,
-            user_id=user_id,
+            user_id=gateway_user_id(request),
         )
         return {"ok": True, "data": conv}
     except Exception as exc:
@@ -595,28 +572,27 @@ async def api_create_conversation(payload: Optional[ConversationCreate] = None):
 
 
 @app.get("/api/chat/conversations/{conversation_id}")
-async def api_get_conversation(conversation_id: str):
-    """Get full conversation details and historical message records."""
-    clean_cid = conversation_id.strip()
+async def api_get_conversation(conversation_id: str, request: Request):
+    """A conversation owned by the signed-in user, with its message history."""
+    conv = await asyncio.to_thread(_owned_conversation, conversation_id, gateway_user_id(request))
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
     try:
-        conv = db.get_conversation(clean_cid)
-        if not conv:
-            raise HTTPException(status_code=404, detail="Conversation not found.")
-        messages = db.get_chat_messages(clean_cid, limit=60)
+        messages = await asyncio.to_thread(db.get_chat_messages, conv["id"], None, 60)
         return {"ok": True, "data": {"conversation": conv, "messages": messages}}
-    except HTTPException:
-        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to load conversation: {str(exc)}")
 
 
 @app.delete("/api/chat/conversations/{conversation_id}")
-async def api_delete_conversation(conversation_id: str):
-    """Delete a conversation thread and its messages."""
-    clean_cid = conversation_id.strip()
+async def api_delete_conversation(conversation_id: str, request: Request):
+    """Delete a conversation owned by the signed-in user."""
+    conv = await asyncio.to_thread(_owned_conversation, conversation_id, gateway_user_id(request))
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
     try:
-        deleted = db.delete_conversation(clean_cid)
-        copilot_service.reset_session(clean_cid)
+        deleted = await asyncio.to_thread(db.delete_conversation, conv["id"])
+        copilot_service.reset_session(conv["id"])
         return {"ok": True, "deleted": deleted}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(exc)}")
@@ -655,11 +631,20 @@ async def api_copilot_context(symbol: str = "BTC-USD", timeframe: str = "1d"):
 
 
 @app.post("/api/copilot/reset")
-async def api_copilot_reset(conversation_id: str):
-    """Reset a conversation session and clear conversational history."""
-    clean_cid = conversation_id.strip() if conversation_id else ""
+async def api_copilot_reset(request: Request, conversation_id: Optional[str] = None):
+    """Reset one of the signed-in user's conversation sessions (id in query or JSON body)."""
+    if not conversation_id:
+        try:
+            body = await request.json()
+            conversation_id = body.get("conversation_id") if isinstance(body, dict) else None
+        except Exception:
+            conversation_id = None
+    clean_cid = (conversation_id or "").strip()
     if not clean_cid:
         raise HTTPException(status_code=400, detail="conversation_id cannot be empty.")
+    exists = await asyncio.to_thread(db.get_conversation, clean_cid)
+    if exists and not await asyncio.to_thread(_owned_conversation, clean_cid, gateway_user_id(request)):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
     cleared = copilot_service.reset_session(clean_cid)
     return {"ok": True, "cleared": cleared}
 
@@ -755,18 +740,12 @@ async def get_global_market_news():
             seen.add(h["title"])
             unique.append(h)
 
-    # Fallback simulated headlines if everything failed
+    # No live source answered: keep serving the last real response if there is
+    # one, otherwise an honest empty list (never invented headlines).
     if not unique:
         if _GLOBAL_NEWS_CACHE["data"]:
             return _GLOBAL_NEWS_CACHE["data"]
-        unique = [
-            {"title": "Global stocks climb as investors weigh inflation metrics and rate decisions", "link": "#", "source": "Reuters", "published": ""},
-            {"title": "Nasdaq leads tech rebound while bond yields stabilize", "link": "#", "source": "Bloomberg", "published": ""},
-            {"title": "European markets tick higher on positive corporate earnings outlook", "link": "#", "source": "CNBC", "published": ""},
-            {"title": "Oil prices steady amid supply cuts and global demand forecast shifts", "link": "#", "source": "MarketWatch", "published": ""},
-            {"title": "Fed signals cautious approach to rate cuts amid mixed economic data", "link": "#", "source": "Reuters", "published": ""},
-            {"title": "Asian markets mixed as China PMI data disappoints investors", "link": "#", "source": "Bloomberg", "published": ""},
-        ]
+        return {"headlines": [], "count": 0, "symbol": "GLOBAL"}
 
     # Sentiment-tag each headline
     for h in unique:
@@ -789,16 +768,12 @@ async def get_global_market_news():
 # ---------------------------------------------------------------------------
 from fastapi import HTTPException
 from pydantic import BaseModel
-from auth import hash_password, verify_password, store_otp, verify_otp as auth_verify_otp, send_otp_email
+from auth import hash_password, verify_password
 
 class RegisterRequest(BaseModel):
     username: str
     email: str
     password: str
-
-class VerifyOtpRequest(BaseModel):
-    email: str
-    otp: str
 
 class LoginRequest(BaseModel):
     username: str
@@ -811,9 +786,6 @@ class SyncAuthRequest(BaseModel):
     first_name: str | None = None
     last_name: str | None = None
 
-class ResendOtpRequest(BaseModel):
-    email: str
-
 @app.get("/api/auth/config")
 def api_auth_config():
     pub_key = (
@@ -825,17 +797,49 @@ def api_auth_config():
         "is_clerk_configured": bool(pub_key and pub_key.startswith("pk_") and not pub_key.endswith("placeholder_key"))
     }
 
+def _clerk_verified_email(clerk_id: str) -> Optional[str]:
+    """
+    The Clerk user's primary email from the Clerk Backend API, and only when
+    Clerk has verified it. Emails sent by the browser are never trusted for
+    linking an existing account.
+    """
+    secret = os.getenv("CLERK_SECRET_KEY", "").strip()
+    if not secret.startswith("sk_") or secret.endswith("placeholder_key"):
+        return None
+    try:
+        import urllib.parse
+        import urllib.request
+        req = urllib.request.Request(
+            f"https://api.clerk.com/v1/users/{urllib.parse.quote(clerk_id, safe='')}",
+            headers={"Authorization": f"Bearer {secret}", "User-Agent": "OrbitTradingTerminal/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            clerk_user = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.warning(f"[auth] Clerk user lookup failed: {exc}")
+        return None
+    primary = clerk_user.get("primary_email_address_id")
+    for entry in clerk_user.get("email_addresses") or []:
+        if entry.get("id") == primary and (entry.get("verification") or {}).get("status") == "verified":
+            return (entry.get("email_address") or "").strip().lower() or None
+    return None
+
+
 @app.post("/api/auth/sync")
-def api_auth_sync(req: SyncAuthRequest):
+async def api_auth_sync(req: SyncAuthRequest, request: Request):
     """
-    Called when a user logs in via Clerk / Google OAuth.
-    Finds or creates their record in PostgreSQL/SQLite database to make a permanent connection.
-    Returns database integer user_id, username, and balance.
+    Called after a Clerk / Google OAuth sign-in. The Clerk user id comes from
+    the Go gateway, which verified the Clerk session token (X-User-Clerk-ID);
+    the clerk_id and email in the body are ignored. An existing ORBIT account
+    is linked only through the email Clerk reports as verified. Returns the
+    database user_id, username and balance; the gateway then issues its session.
     """
-    user = db.sync_login_user(
-        email=req.email,
-        username=req.username,
-        clerk_id=req.clerk_id
+    clerk_id = gateway_clerk_id(request)
+    if not clerk_id:
+        raise HTTPException(status_code=401, detail="A verified Clerk session is required.")
+    verified_email = await asyncio.to_thread(_clerk_verified_email, clerk_id)
+    user = await asyncio.to_thread(
+        db.sync_login_user, email=verified_email, username=req.username, clerk_id=clerk_id
     )
     if not user:
         raise HTTPException(status_code=500, detail="Database sync failed.")
@@ -843,7 +847,7 @@ def api_auth_sync(req: SyncAuthRequest):
         "ok": True,
         "user_id": user["id"],
         "username": user["username"],
-        "balance": user.get("balance", 1000000.0)
+        "balance": user.get("balance"),
     }
 
 @app.post("/api/register")
@@ -920,16 +924,6 @@ def api_register(req: RegisterRequest):
     }
 
 
-@app.post("/api/verify-otp")
-def api_verify_otp(req: VerifyOtpRequest):
-    # Kept for backward compatibility
-    user = db.get_user_by_email(req.email.lower().strip())
-    if user:
-        db.mark_user_verified(user["id"])
-        return {"ok": True, "user_id": user["id"], "username": user["username"]}
-    return {"ok": True, "user_id": 1, "username": "Trader"}
-
-
 @app.post("/api/login")
 def api_login(req: LoginRequest):
     ident = req.username.strip()
@@ -949,15 +943,6 @@ def api_login(req: LoginRequest):
         
     return {"ok": True, "user_id": user["id"], "username": user["username"]}
 
-
-@app.post("/api/resend-otp")
-def api_resend_otp(req: ResendOtpRequest):
-    user = db.get_user_by_email(req.email.lower().strip())
-    if not user:
-        raise HTTPException(status_code=404, detail="No account found with that email.")
-    otp_code = store_otp(req.email.lower().strip(), user["id"])
-    send_otp_email(req.email.lower().strip(), otp_code, user["username"])
-    return {"ok": True, "message": "A new verification code has been sent."}
 
 class BotConfigRequest(BaseModel):
     user_id: int
@@ -1204,13 +1189,14 @@ async def api_open_trade(req: OpenTradeRequest):
         raise HTTPException(status_code=400, detail="Trade quantity must be greater than zero")
     leverage = max(1.0, float(req.leverage or 1.0))
 
-    # 1. Obtain real-time market price
+    # 1. Obtain the real-time market price. No price, no order: a trade is
+    # never executed against an invented price.
     try:
-        price = await market_service.get_price(symbol)
-        if price <= 0:
-            price = 100.0
-    except Exception:
-        price = 100.0
+        price = float(await market_service.get_price(symbol) or 0.0)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"No live market price available for {symbol}: {exc}")
+    if price <= 0:
+        raise HTTPException(status_code=503, detail=f"No live market price available for {symbol}.")
 
     # 2 & 3. Shared execution path (also used by the Auto-Trade Bot): atomic
     # balance validation, margin reservation, trade insert and audit record in
@@ -1293,7 +1279,7 @@ async def api_close_position(trade_id: int, req: ClosePositionRequest):
             await bot_engine.on_trade_closed(pos, result)
 
         summary = result.get("summary") or await position_service.get_account_and_dashboard_summary(req.user_id)
-        wallet_balance = summary.get("account", {}).get("total_capital", 0.0)
+        wallet_balance = summary.get("account", {}).get("available_balance", 0.0)
 
         # Broadcast state synchronization to user's connected WebSocket clients
         await manager.send_to_user(req.user_id, {"type": "wallet", "balance": wallet_balance})
@@ -1408,6 +1394,10 @@ manager = ConnectionManager()
 # Dictionary to hold the running agent loops
 # Key: websocket, Value: asyncio.Task
 running_loops = {}
+# Asset each terminal pipeline is analysing (priced by the tick scheduler).
+pipeline_assets = {}
+# Always priced, so the dashboard has live ticks before any position exists.
+WATCHLIST_SYMBOLS = ("BTC-USD", "ETH-USD")
 
 
 def build_confluence(momentum_res, ribbon_res, flow_res, mtf_res):
@@ -1428,6 +1418,7 @@ def build_confluence(momentum_res, ribbon_res, flow_res, mtf_res):
 
 def stop_pipeline(websocket: WebSocket):
     """Cancel and forget any agent pipeline attached to this socket."""
+    pipeline_assets.pop(websocket, None)
     task = running_loops.pop(websocket, None)
     if task:
         task.cancel()
@@ -1665,69 +1656,41 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
             log_agent("P&L Manager", "No active positions to monitor. Monitoring completed.")
         await asyncio.sleep(0.8)
 
-        # Define simulation price variables
-        sim_price = latest_close
+        # Live loop: every tick re-reads the real market quote (MarketDataService,
+        # cached upstream) and re-runs the agents on the current candle. A tick
+        # without a fresh quote is skipped entirely, so nothing is planned,
+        # filled or closed against an invented price.
+        live_price = latest_close
         tick_count = 0
-        
-        # Start real-time simulation loop
+
         while True:
-            # Simulate real-time price fluctuation (random walk around the actual close price)
-            # This makes the simulator responsive on the chart every few seconds
             tick_count += 1
-            change_percent = random.uniform(-0.002, 0.002) # max 0.2% change per tick
-            sim_price = sim_price * (1 + change_percent)
-            
-            # Send live tick to chart
-            current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            tick_candle = {
-                "time": int(datetime.now().timestamp()), # Unix timestamp for intraday chart updates
-                "open": sim_price,
-                "high": max(sim_price, sim_price * 1.001),
-                "low": min(sim_price, sim_price * 0.999),
-                "close": sim_price
-            }
-            
-            # Recalculate daily percentage change
-            current_change_pct = ((sim_price - prev_close) / prev_close) * 100
+            try:
+                quote = await market_service.get_quote(asset)
+            except Exception as exc:
+                quote = None
+                if tick_count % 5 == 1:
+                    log_agent("SYSTEM", f"Live quote for {asset} unavailable ({exc}); waiting for market data.")
+            if quote is None or not quote.price or quote.price <= 0:
+                await asyncio.sleep(TICK_INTERVAL_SECONDS)
+                continue
+            live_price = float(quote.price)
+            live_change_pct = float(quote.change_percent or 0.0)
             tick_payload = {
                 "type": "tick",
-                "candle": tick_candle,
-                "changePercent": current_change_pct,
-            }
-
-            # Phase 6 & Phase 9: Live Market Cache & Symbol-Indexed P&L Updates in Valkey
-            valkey_service.set(f"market:price:{asset}", {
                 "symbol": asset,
-                "price": round(sim_price, 4),
-                "previous_close": prev_close,
-                "change": round(sim_price - prev_close, 4),
-                "change_percent": round(current_change_pct, 4),
-                "updated_at": datetime.now().isoformat()
-            }, ttl_seconds=15)
-
-            # Update live P&L for any active positions on this symbol
-            active_trade_ids = valkey_service.smembers(f"symbol:{asset}:active_trades")
-            if active_trade_ids:
-                for tid_s in active_trade_ids:
-                    pos_data = valkey_service.get(f"trade:active:{tid_s}")
-                    if pos_data and isinstance(pos_data, dict) and pos_data.get("status") == "active":
-                        entry = float(pos_data.get("entry_price", sim_price))
-                        qty = float(pos_data.get("remaining_quantity") or pos_data.get("quantity", 0.0))
-                        lev = float(pos_data.get("leverage") or 1.0)
-                        side = str(pos_data.get("side", "BUY")).upper()
-                        pnl = (sim_price - entry) * qty * lev if side == "BUY" else (entry - sim_price) * qty * lev
-                        margin = float(pos_data.get("margin_used") or 1.0)
-                        pos_data["current_price"] = round(sim_price, 4)
-                        pos_data["unrealized_pnl"] = round(pnl, 2)
-                        pos_data["unrealized_pnl_pct"] = round((pnl / margin * 100.0) if margin > 0 else 0.0, 2)
-                        valkey_service.set(f"trade:active:{tid_s}", pos_data, ttl_seconds=60)
-
-            # Publish to Go hub for high-concurrency broadcast (Phase 11).
-            # Also send via Python socket so single-user setups work without Go.
-            await asyncio.to_thread(publish_tick, tick_payload)
+                "candle": {
+                    "time": int(datetime.now().timestamp()),
+                    "open": live_price,
+                    "high": live_price,
+                    "low": live_price,
+                    "close": live_price,
+                },
+                "changePercent": live_change_pct,
+                "data": {"price": live_price, "change_percent": live_change_pct},
+            }
             await manager.send_json(tick_payload, websocket)
 
-            
             # 2. Run indicator analyst (Agent 2)
             # Fold the tick into the CURRENT candle rather than appending a new
             # one. Appending a synthetic row where open==high==low==close and
@@ -1735,9 +1698,9 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
             # degenerate (zero range, zero body, zero volume).
             df_curr = df.copy()
             last = df_curr.index[-1]
-            df_curr.loc[last, "Close"] = sim_price
-            df_curr.loc[last, "High"] = max(float(df_curr.loc[last, "High"]), sim_price)
-            df_curr.loc[last, "Low"] = min(float(df_curr.loc[last, "Low"]), sim_price)
+            df_curr.loc[last, "Close"] = live_price
+            df_curr.loc[last, "High"] = max(float(df_curr.loc[last, "High"]), live_price)
+            df_curr.loc[last, "Low"] = min(float(df_curr.loc[last, "Low"]), live_price)
 
             tech_res = await asyncio.to_thread(
                 analyze_indicators, df_curr, log_agent if tick_count % 3 == 1 else None
@@ -1807,7 +1770,7 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
                     sentiment_score,
                     sr_data["supports"],
                     sr_data["resistances"],
-                    sim_price,
+                    live_price,
                     wallet_balance,
                     log_agent,
                     strategy_res.get("reasoning", ""),
@@ -1843,12 +1806,12 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
                     await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
                     
             # 6. Run Execution Agent (Agent 6) — withdraws stale pending orders
-            withdrawn = await asyncio.to_thread(check_and_execute_trades, sim_price, log_agent, user_id)
+            withdrawn = await asyncio.to_thread(check_and_execute_trades, live_price, log_agent, user_id)
             if withdrawn:
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
 
             # 7. Run Portfolio Monitor (Agent 7) — owns SL/target exits
-            closed = await asyncio.to_thread(monitor_positions, sim_price, log_agent, user_id, asset)
+            closed = await asyncio.to_thread(monitor_positions, live_price, log_agent, user_id, asset)
             if closed:
                 await manager.send_json({"type": "wallet", "balance": db.get_user_balance(user_id)}, websocket)
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
@@ -1867,33 +1830,13 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
 
 # WebSocket Endpoint
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, username: str | None = None):
+async def websocket_endpoint(websocket: WebSocket):
     """
-    The socket is bound to a real, already-registered account.
-    Resolves identity by numeric user_id, clerk_id, username, or email.
-    If an authenticated session connects, connects or provisions the user record cleanly.
+    The socket is bound to the account the Go gateway verified (X-User-ID,
+    enforced by GatewayIdentityMiddleware). Query parameters carry no identity.
     """
-    user = None
-    if user_id is not None and str(user_id).strip():
-        raw_uid = str(user_id).strip()
-        if raw_uid.isdigit():
-            user = db.get_user_by_id(int(raw_uid))
-        if not user:
-            user = db.get_user_by_clerk_id(raw_uid)
-
-    if user is None and username:
-        clean_u = username.strip()
-        user = db.get_user_by_username(clean_u)
-        if not user and "@" in clean_u:
-            user = db.get_user_by_email(clean_u.lower())
-
-    # Auto-connect/sync if user authenticated on frontend
-    if user is None and (username or user_id):
-        user = db.sync_login_user(
-            username=username.strip() if username else None,
-            clerk_id=str(user_id).strip() if user_id else None
-        )
-
+    user_id = gateway_user_id(websocket)
+    user = await asyncio.to_thread(db.get_user_by_id, user_id) if user_id else None
     if user is None:
         # 1008 = policy violation. Accept first so the browser sees the reason.
         await websocket.accept()
@@ -1935,6 +1878,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
                 running_loops[websocket] = asyncio.create_task(
                     run_agent_pipeline(websocket, asset, user_id)
                 )
+                pipeline_assets[websocket] = asset
                 await manager.send_json({"type": "system_status", "status": "running"}, websocket)
 
             elif action == "stop":
@@ -1967,11 +1911,17 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
                 updated_summary = await position_service.get_account_and_dashboard_summary(user_id)
                 await manager.send_json({"type": "dashboard_summary", "data": updated_summary}, websocket)
 
-            elif action == "cancel_trade":
-                # Trader rejected — cancel all pending trades for this user
-                pending = db.get_active_positions(user_id)
-                for p in pending:
-                    if p["status"] == "pending":
+            elif action in ("cancel_trade", "reject_trade"):
+                # Trader rejected — cancel the named pending order, or every
+                # pending order when no trade_id is given.
+                raw_id = message.get("trade_id")
+                try:
+                    wanted = None if raw_id is None else int(raw_id)
+                    valid_request = True
+                except (TypeError, ValueError):
+                    wanted, valid_request = None, False
+                for p in (db.get_active_positions(user_id) if valid_request else []):
+                    if p["status"] == "pending" and (wanted is None or p["id"] == wanted):
                         db.close_trade(p["id"], p["entry_price"], "cancelled")
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
                 updated_summary = await position_service.get_account_and_dashboard_summary(user_id)
@@ -2039,8 +1989,8 @@ bot_engine = BotEngine(publish=publish_to_user)
 
 async def _require_user(user_id: int) -> dict:
     """
-    Resolve the acting account. Identity is still the client-supplied user_id
-    (the app has no server-side session yet); every bot query is scoped to it,
+    Resolve the acting account. user_id is the account the Go gateway verified
+    (GatewayIdentityMiddleware rewrites it); every bot query is scoped to it,
     so one account can never read or control another account's sessions.
     """
     user = await asyncio.to_thread(db.get_user_by_id, user_id)
@@ -2235,100 +2185,113 @@ async def internal_bot_fail(session_id: int, req: BotFailRequest):
     return await bot_engine.fail_session(session_id, req.error)
 
 
+@app.get("/internal/auth/resolve", dependencies=_internal)
+async def internal_auth_resolve(clerk_id: str):
+    """Gateway lookup (when it has no database pool): Clerk user -> ORBIT account."""
+    user = await asyncio.to_thread(db.get_user_by_clerk_id, clerk_id.strip())
+    if not user:
+        raise HTTPException(status_code=404, detail="No account is linked to this Clerk user.")
+    return {"user_id": user["id"], "username": user["username"]}
+
+
 async def market_tick_scheduler_loop():
     """
-    Authoritative single market tick scheduler and real-time live P&L engine.
-    Fulfills Part 9 & Part 24: Single controlled scheduler across the entire application.
-    Gathers active symbols, fetches quotes, updates Valkey, updates live trade P&L in O(1),
-    and broadcasts synchronized real-time ticks to Go stream hub and WebSocket connections.
+    Single market tick scheduler for the whole service (every 2.5 s):
+      1. Price every symbol with an open position, plus the watchlist and the
+         assets open in a terminal, from MarketDataService (real quotes).
+      2. Refresh the Valkey live-price cache (market:price:<SYM>, 15 s TTL);
+         the Go gateway prices its portfolio reads from it.
+      3. Publish a typed tick frame to the orbit-stream hub (public prices).
+      4. Push each open position's live P&L to its owner's sockets.
+    Positions come straight from the database each round, so live P&L never
+    depends on a cache that some read endpoint happened to warm.
     """
     while True:
         try:
-            # 1. Discover all symbols with active positions
-            active_symbols = {"BTC-USD", "ETH-USD"}
             try:
-                open_trades = db.get_open_positions()
-                for tr in open_trades:
-                    sym = tr.get("asset")
-                    if sym:
-                        active_symbols.add(sym.strip().upper())
-            except Exception:
-                pass
+                open_trades = await asyncio.to_thread(db.get_open_positions)
+            except Exception as db_err:
+                logger.debug(f"[MarketScheduler] open positions unavailable: {db_err}")
+                open_trades = []
 
-            for sym in list(active_symbols):
+            by_symbol: dict = {}
+            for tr in open_trades:
+                sym = (tr.get("asset") or "").strip().upper()
+                if sym:
+                    by_symbol.setdefault(sym, []).append(tr)
+            symbols = set(WATCHLIST_SYMBOLS) | set(by_symbol) | {a for a in pipeline_assets.values() if a}
+
+            for sym in sorted(symbols):
                 try:
                     quote = await market_service.get_quote(sym)
-                    if not quote or quote.price <= 0:
+                    if not quote or not quote.price or quote.price <= 0:
                         continue
                     curr_price = float(quote.price)
+                    change_pct = float(quote.change_percent or 0.0)
+                    now_dt = datetime.now()
 
-                    # Update Valkey live price cache (TTL 15s)
                     valkey_service.set(f"market:price:{sym}", {
                         "symbol": sym,
                         "price": curr_price,
                         "previous_close": float(quote.previous_close or curr_price),
                         "change": float(quote.change or 0.0),
-                        "change_percent": float(quote.change_percent or 0.0),
-                        "updated_at": datetime.now().isoformat()
+                        "change_percent": change_pct,
+                        "updated_at": now_dt.isoformat(),
                     }, ttl_seconds=15)
 
-                    # Publish tick to high-concurrency Go stream hub
-                    tick_payload = {
-                        "time": int(datetime.now().timestamp()),
-                        "open": curr_price,
-                        "high": max(curr_price, curr_price * 1.0005),
-                        "low": min(curr_price, curr_price * 0.9995),
-                        "close": curr_price,
-                        "volume": float(quote.volume or 0.0),
+                    await asyncio.to_thread(publish_tick, {
+                        "type": "tick",
                         "symbol": sym,
-                        "changePercent": float(quote.change_percent or 0.0),
-                    }
-                    publish_tick(tick_payload)
+                        "candle": {
+                            "time": int(now_dt.timestamp()),
+                            "open": curr_price,
+                            "high": curr_price,
+                            "low": curr_price,
+                            "close": curr_price,
+                            "volume": float(quote.volume or 0.0),
+                        },
+                        "changePercent": change_pct,
+                        "data": {"price": curr_price, "change_percent": change_pct},
+                    })
 
-                    # Find affected active trades for this symbol in O(1)
-                    trade_ids = valkey_service.smembers(f"symbol:{sym}:active_trades")
-                    if trade_ids:
-                        for tid in trade_ids:
-                            trade_data = valkey_service.get(f"trade:active:{tid}")
-                            if trade_data and isinstance(trade_data, dict):
-                                entry = float(trade_data.get("entry_price") or curr_price)
-                                qty = float(trade_data.get("remaining_quantity") or trade_data.get("quantity") or 0.0)
-                                lev = float(trade_data.get("leverage") or 1.0)
-                                side = str(trade_data.get("side") or trade_data.get("type") or "BUY").upper()
-
-                                # P&L calculation based on side
-                                if side in ("BUY", "LONG"):
-                                    unrealized = (curr_price - entry) * qty * lev
-                                else:
-                                    unrealized = (entry - curr_price) * qty * lev
-
-                                margin = float(trade_data.get("margin_used") or ((qty * entry) / lev))
-                                unrealized_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
-
-                                trade_data["current_price"] = round(curr_price, 4)
-                                trade_data["unrealized_pnl"] = round(unrealized, 2)
-                                trade_data["unrealized_pnl_pct"] = round(unrealized_pct, 2)
-                                trade_data["unrealized_pnl_percent"] = round(unrealized_pct, 2)
-                                trade_data["updated_at"] = datetime.now().isoformat()
-                                valkey_service.set(f"trade:active:{tid}", trade_data, ttl_seconds=300)
-
-                                # Broadcast updated trade to owner
-                                uid = trade_data.get("user_id", 1)
-                                await manager.send_to_user(uid, {
-                                    "type": "trade_updated",
-                                    "data": trade_data,
-                                    "trade_id": tid,
-                                    "current_price": round(curr_price, 4),
-                                    "unrealized_pnl": round(unrealized, 2)
-                                })
-                                await manager.send_to_user(uid, {
-                                    "type": "position_updated",
-                                    "position": trade_data
-                                })
+                    for tr in by_symbol.get(sym, []):
+                        uid = tr.get("user_id")
+                        if not uid:
+                            continue
+                        entry = float(tr.get("entry_price") or curr_price)
+                        rem = tr.get("remaining_quantity")
+                        qty = float(rem if rem is not None else (tr.get("quantity") or 0.0))
+                        lev = float(tr.get("leverage") or 1.0)
+                        if str(tr.get("type") or "buy").lower() == "buy":
+                            unrealized = (curr_price - entry) * qty * lev
+                        else:
+                            unrealized = (entry - curr_price) * qty * lev
+                        margin = float(tr.get("margin_used") or ((qty * entry) / lev))
+                        pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
+                        update = {
+                            "id": tr["id"],
+                            "trade_id": tr["id"],
+                            "user_id": uid,
+                            "symbol": sym,
+                            "asset": sym,
+                            "current_price": round(curr_price, 4),
+                            "unrealized_pnl": round(unrealized, 2),
+                            "unrealized_pnl_pct": round(pct, 2),
+                            "unrealized_pnl_percent": round(pct, 2),
+                            "is_live": True,
+                            "updated_at": now_dt.isoformat(),
+                        }
+                        await manager.send_to_user(uid, {
+                            "type": "trade_updated",
+                            "data": update,
+                            "trade_id": tr["id"],
+                            "current_price": update["current_price"],
+                            "unrealized_pnl": update["unrealized_pnl"],
+                        })
+                        await manager.send_to_user(uid, {"type": "position_updated", "position": update})
                 except Exception as sym_err:
                     logger.debug(f"[MarketScheduler] Error ticking symbol {sym}: {sym_err}")
 
-            # Tick interval: 2.5 seconds
             await asyncio.sleep(2.5)
         except asyncio.CancelledError:
             break
@@ -2346,6 +2309,9 @@ if os.path.isdir(node_modules_path):
 else:
     print("[startup] node_modules not found - skipping /node_modules mount.")
 
-# Serve static frontend files (must be defined AFTER the api routes)
+# Serve static frontend files when present (must be defined AFTER the api
+# routes). The Go gateway serves the frontend; the ai-service container has no
+# frontend directory, and StaticFiles raises at import time if it is missing.
 frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+if os.path.isdir(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

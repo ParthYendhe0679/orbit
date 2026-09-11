@@ -1,5 +1,5 @@
 """
-backend/services/copilot_service.py — ORBIT AI Market Intelligence Copilot Service.
+ai-service/services/copilot_service.py — ORBIT AI Market Intelligence Copilot Service.
 
 Orchestrates:
 1. Context Resolution: retrieves existing ORBIT analysis (Phases 2-10) with zero duplicate execution.
@@ -18,9 +18,9 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import backend.database as db
-from backend.llm import generate_text
-from backend.models.copilot import (
+import database as db
+from llm import generate_text
+from models.copilot import (
     CopilotChatMessage,
     CopilotChatRequest,
     CopilotChatResponse,
@@ -30,14 +30,14 @@ from backend.models.copilot import (
     CopilotMessageRole,
     ResponseMode,
 )
-from backend.models.decision import MarketStance
-from backend.models.explainability import ExplainabilityEvaluationResult, ExplainabilityStatus
-from backend.services.decision_engine import DecisionEngine, decision_engine
-from backend.services.explainability_engine import ExplainabilityEngine, explainability_engine
-from backend.services.market_data_service import MarketDataService, market_service
-from backend.services.opportunity_engine import OpportunityEngine, opportunity_engine
-from backend.services.orbit_brain import OrbitBrain, orbit_brain
-from backend.services.risk_guard import RiskGuard, risk_guard
+from models.decision import MarketStance
+from models.explainability import ExplainabilityEvaluationResult, ExplainabilityStatus
+from services.decision_engine import DecisionEngine, decision_engine
+from services.explainability_engine import ExplainabilityEngine, explainability_engine
+from services.market_data_service import MarketDataService, market_service
+from services.opportunity_engine import OpportunityEngine, opportunity_engine
+from services.orbit_brain import OrbitBrain, orbit_brain
+from services.risk_guard import RiskGuard, risk_guard
 
 logger = logging.getLogger("orbit.copilot")
 
@@ -237,8 +237,12 @@ class CopilotService:
             try:
                 existing_conv = db.get_conversation(cid)
                 if existing_conv:
+                    if existing_conv.get("user_id") != user_id:
+                        # Someone else's (or an unowned legacy) conversation.
+                        raise PermissionError("conversation belongs to another account")
                     msgs = db.get_chat_messages(cid, limit=16)
                     self._sessions[cid] = {
+                        "user_id": user_id,
                         "symbol": existing_conv.get("selected_asset") or clean_sym,
                         "market": existing_conv.get("selected_market") or market,
                         "created_at": time.time(),
@@ -256,14 +260,18 @@ class CopilotService:
                         user_id=user_id,
                     )
                     self._sessions[cid] = {
+                        "user_id": user_id,
                         "symbol": clean_sym,
                         "market": market,
                         "created_at": time.time(),
                         "messages": [],
                     }
+            except PermissionError:
+                raise
             except Exception as e:
                 logger.warning(f"Could not load conversation {cid} from DB: {e}")
                 self._sessions[cid] = {
+                    "user_id": user_id,
                     "symbol": clean_sym,
                     "market": market,
                     "created_at": time.time(),
@@ -271,6 +279,8 @@ class CopilotService:
                 }
         
         session = self._sessions[cid]
+        if session.get("user_id") != user_id:
+            raise PermissionError("conversation belongs to another account")
         if clean_sym:
             session["symbol"] = clean_sym
         return cid, session["messages"]

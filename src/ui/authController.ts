@@ -4,6 +4,8 @@
  */
 
 import { authService } from "../services/authService";
+import { setAuthTokenProvider } from "../services/apiClient";
+import { SessionIdentity } from "../types/auth";
 import { store } from "../state/store";
 import { safeText, getElement } from "../utils/dom";
 
@@ -128,6 +130,10 @@ export async function initClerkAuth(): Promise<any> {
                 }
                 isClerkActive = true;
                 console.log("[Orbit Auth] Clerk Headless SDK loaded with custom UI.");
+                // API calls carry the Clerk session token; the gateway verifies it (JWKS).
+                setAuthTokenProvider(async () =>
+                    clerkInstance && clerkInstance.session ? clerkInstance.session.getToken() : null
+                );
 
                 const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
                 const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1000;
@@ -254,10 +260,10 @@ async function _syncClerkUserAndEnter(u: any): Promise<boolean> {
     }
 
     try {
+        // The gateway takes the Clerk user id from the verified session token.
         const data = await authService.syncClerkUser({
             email: userEmail,
-            username: displayName,
-            clerk_id: u.id
+            username: displayName
         });
 
         if (data && data.ok && data.user_id) {
@@ -288,8 +294,6 @@ export function enterDashboard(username: string, userId?: string | number | null
     store.set("currentUserId", finalUserId);
 
     safeText(getElement("dashboard-user"), finalUsername);
-    localStorage.setItem("orbit_logged_in_username", finalUsername);
-    if (finalUserId) localStorage.setItem("orbit_user_id", String(finalUserId));
     window.location.hash = "#dashboard";
 
     // Update body class and stop 3D WebGL candlestick background (only runs on landing and login/signup)
@@ -319,7 +323,7 @@ export function enterDashboard(username: string, userId?: string | number | null
 
     // Initialize connection and UI state
     setTimeout(() => {
-        store.sockets.connect(finalUserId || 1, finalUsername);
+        store.sockets.connect();
         if (typeof (window as any).switchToTab === "function") {
             (window as any).switchToTab("dashboard");
         }
@@ -333,10 +337,68 @@ export function enterDashboard(username: string, userId?: string | number | null
 }
 
 /**
- * Launches instant demo trading console.
+ * Opens the live terminal for an existing session; otherwise asks the visitor
+ * to sign in (there is no shared demo account).
  */
-export function launchDemoDirect(): void {
-    enterDashboard("Demo Trader", 1);
+export async function launchDemoDirect(): Promise<void> {
+    if (await restoreSession()) return;
+    scrollToLogin();
+    showAuthError("Sign in or create an account to open the live trading terminal.");
+}
+
+/**
+ * Restores the dashboard from the session the gateway verifies (HttpOnly
+ * cookie or Clerk token) — never from a user id kept in the browser.
+ */
+export async function restoreSession(): Promise<SessionIdentity | null> {
+    try {
+        const me = await authService.me();
+        if (me && me.ok && me.user_id) {
+            enterDashboard(me.username, me.user_id);
+            return me;
+        }
+    } catch {
+        // No valid session.
+    }
+    if (window.location.hash.includes("dashboard")) {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    return null;
+}
+
+let _sessionRecovery: Promise<boolean> | null = null;
+
+/**
+ * Called when the gateway rejects the session (HTTP 401 / socket auth error).
+ * A live Clerk session is exchanged for a fresh gateway session; otherwise
+ * the user is signed out.
+ */
+export async function handleUnauthorized(): Promise<void> {
+    if (!document.body.classList.contains("in-dashboard")) return;
+    if (!_sessionRecovery) {
+        _sessionRecovery = (async () => {
+            const user = clerkInstance && clerkInstance.session ? clerkInstance.user : null;
+            if (!user) return false;
+            try {
+                const email = (user.primaryEmailAddress && user.primaryEmailAddress.emailAddress) || "";
+                const data = await authService.syncClerkUser({ email, username: user.username || user.fullName || "" });
+                return !!(data && data.ok);
+            } catch {
+                return false;
+            }
+        })();
+        _sessionRecovery.finally(() => {
+            window.setTimeout(() => {
+                _sessionRecovery = null;
+            }, 5000);
+        });
+    }
+    if (await _sessionRecovery) {
+        store.sockets.connect();
+        return;
+    }
+    await logout();
+    showAuthError("Your session has ended. Please sign in again.");
 }
 
 /**
@@ -465,22 +527,8 @@ export async function handleClerkGoogleAuth(): Promise<void> {
             }
         }
 
-        // Fast-path Fallback: Sync verified Google Trader account with PostgreSQL/SQLite database immediately
-        console.log("[Orbit Auth] Fast-path Google authentication to database...");
-        clearTimeout(resetTimer);
-        const syncData = await authService.syncClerkUser({
-            email: "google.trader@orbitai.trade",
-            username: "Google Trader",
-            clerk_id: "google_oauth_" + Date.now().toString(36)
-        });
-
-        if (syncData && syncData.ok && syncData.user_id) {
-            sessionStorage.removeItem("orbit_oauth_in_progress");
-            enterDashboard(syncData.username || "Google Trader", syncData.user_id);
-            return;
-        } else {
-            throw new Error("Database account creation failed");
-        }
+        // No Clerk SDK means no verified Google identity: never create an account without one.
+        throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded.");
     } catch (err: any) {
         clearTimeout(resetTimer);
         console.error("Google auth error:", err);
@@ -616,8 +664,16 @@ export async function handleSignup(event: Event): Promise<void> {
  * Logs out user and returns to 3D landing page.
  */
 export async function logout(): Promise<void> {
+    // End the gateway session (HttpOnly cookie) and the live sockets first.
+    await authService.logout();
+    store.sockets.disconnect();
+    store.set("currentUserId", null);
+    store.set("dashboardSummary", null);
+    store.set("walletBalance", null);
+    // Legacy keys from builds that trusted a user id kept in the browser.
     localStorage.removeItem("orbit_logged_in_username");
     localStorage.removeItem("orbit_user_id");
+    localStorage.removeItem("orbit_username");
 
     if (isClerkActive && clerkInstance) {
         try {

@@ -322,7 +322,7 @@
                     <div class="sidebar-user-profile">
                         <div class="sidebar-user-details">
                             <div class="sidebar-username" id="dashboard-user">Trader Account</div>
-                            <div class="sidebar-wallet-balance" id="wallet-balance">INR ₹10,00,000.00</div>
+                            <div class="sidebar-wallet-balance" id="wallet-balance">—</div>
                         </div>
                     </div>
                     <button id="logout-btn" class="sidebar-logout-btn" title="Exit Terminal">
@@ -2262,7 +2262,7 @@
                                         <!-- Available Balance Display -->
                                         <div class="copilot-balance-badge" title="User Trading Balance">
                                             <span class="copilot-balance-lbl"><i class="fa-solid fa-wallet text-emerald"></i> Balance:</span>
-                                            <strong id="copilot-account-balance" class="copilot-balance-val">₹10,00,000.00</strong>
+                                            <strong id="copilot-account-balance" class="copilot-balance-val">—</strong>
                                         </div>
                                         <div class="copilot-status-pill online"><span class="status-dot green-glow"></span> GROUNDED</div>
                                         <button class="btn btn-sm btn-outline-danger" id="copilot-page-reset-btn" onclick="clearCopilotPageChat()" title="Reset session memory">
@@ -2438,8 +2438,8 @@
         <div class="modal-content glass-card sim-modal-content">
             <div class="modal-header">
                 <div class="modal-title-wrap">
-                    <span class="skill-category-pill">12-Agent Deliberation</span>
-                    <h3>Live Multi-Agent Consensus Simulation</h3>
+                    <span class="skill-category-pill">Illustrative example — not live data</span>
+                    <h3>How the 12-Agent Pipeline Deliberates</h3>
                 </div>
                 <button class="modal-close-btn" onclick="closeSimModal()"><i class="fa-solid fa-xmark"></i></button>
             </div>
@@ -2461,7 +2461,7 @@
                         <span class="sim-time">[00:05]</span> <span class="sim-agent text-red">5. Risk Planner:</span> Entry $68,415 | SL $67,780 | TP $69,685 (1:2 R:R Ratio, 1% Equity Cap $62.42).
                     </div>
                     <div class="sim-step" id="sim-step-6">
-                        <span class="sim-time">[00:06]</span> <span class="sim-agent text-green">6. Execution Agent:</span> Simulated Order Dispatched. Monitoring live ticker stream.
+                        <span class="sim-time">[00:06]</span> <span class="sim-agent text-green">6. Execution Agent:</span> Proposes the order for trader confirmation. (Example values; sign in to run the live pipeline.)
                     </div>
                 </div>
             </div>
@@ -2518,7 +2518,7 @@
                 </div>
                 <div class="mmodal-metric-cell">
                     <span class="mmodal-metric-label">UNREALIZED P&amp;L</span>
-                    <span class="mmodal-metric-val" id="mmodal-unrealized-pnl">+₹0.00</span>
+                    <span class="mmodal-metric-val" id="mmodal-unrealized-pnl">—</span>
                 </div>
             </div>
 
@@ -2555,11 +2555,11 @@
                     </div>
                     <div class="estimate-row">
                         <span>Estimated Realized P&amp;L:</span>
-                        <strong id="est-realized-pnl" class="text-green">+₹0.00</strong>
+                        <strong id="est-realized-pnl" class="text-green">—</strong>
                     </div>
                     <div class="estimate-row">
                         <span>Estimated Margin Release:</span>
-                        <strong id="est-margin-refund">₹0.00</strong>
+                        <strong id="est-margin-refund">—</strong>
                     </div>
                 </div>
 
@@ -2578,6 +2578,6 @@
 
     <!-- Custom 3D Scene Controls script -->
     <script src="three-scene.js?v=orbit_candleshift_v4"></script>
-    <script src="app.bundle.js?v=orbit_ts_v1"></script>
+    <script src="app.bundle.js?v=orbit_ts_v2_gateway"></script>
 </body>
 </html>

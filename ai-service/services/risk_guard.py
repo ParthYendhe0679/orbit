@@ -1,5 +1,5 @@
 """
-backend/services/risk_guard.py — ORBIT Risk Guard (Phase 7).
+ai-service/services/risk_guard.py — ORBIT Risk Guard (Phase 7).
 
 Centralized, deterministic, explainable, and modular risk evaluation system.
 Evaluates the quality, reliability, and risk characteristics of the CURRENT MARKET ANALYSIS
@@ -21,15 +21,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from backend.models.brain import (
+from models.brain import (
     BrainAnalysisContext,
     BrainStatus,
     CompletenessTier,
 )
-from backend.models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
-from backend.models.decision import DecisionEvaluationResult
-from backend.models.opportunity import OpportunityEvaluationResult
-from backend.models.risk import (
+from models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
+from models.decision import DecisionEvaluationResult
+from models.opportunity import OpportunityEvaluationResult
+from models.risk import (
     BotGateCheck,
     BotTradeGateResult,
     DimensionAssessment,
@@ -42,7 +42,7 @@ from backend.models.risk import (
     RiskStatus,
     SafetyFactor,
 )
-from backend.services.orbit_brain import OrbitBrain, orbit_brain
+from services.orbit_brain import OrbitBrain, orbit_brain
 
 logger = logging.getLogger("orbit.risk_guard")
 

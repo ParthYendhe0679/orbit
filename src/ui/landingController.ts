@@ -398,37 +398,47 @@ export function closeSimModal(): void {
     if (modal) modal.classList.add("hidden");
 }
 
-export function drawBtcSparkline(): void {
+/**
+ * Draws the landing card's BTC sparkline from the last 14 daily closes
+ * (public GET /api/market/history). Without real data nothing is drawn.
+ */
+export async function drawBtcSparkline(): Promise<void> {
     const canvas = getElement<HTMLCanvasElement>("btc-sparkline-canvas");
     if (!canvas) return;
-
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    let points: number[] = [];
+    try {
+        const res = await fetch("/api/market/history?symbol=BTC-USD&period=30d&interval=1d", { credentials: "same-origin" });
+        if (res.ok) {
+            const json = await res.json();
+            const candles: Array<{ close: number }> = (json && json.data && json.data.candles) || [];
+            points = candles.slice(-14).map((c) => Number(c.close)).filter((v) => Number.isFinite(v) && v > 0);
+        }
+    } catch {
+        points = [];
+    }
+
     const width = canvas.width;
     const height = canvas.height;
+    ctx.clearRect(0, 0, width, height);
+    if (points.length < 2) return;
 
-    const points = [14, 18, 16, 22, 20, 26, 24, 30, 28, 35, 32, 40, 38, 44];
     const maxVal = Math.max(...points);
     const minVal = Math.min(...points);
-
-    ctx.clearRect(0, 0, width, height);
+    const range = maxVal - minVal || 1;
+    const stepX = width / (points.length - 1);
+    const yOf = (val: number) => height - 6 - ((val - minVal) / range) * (height - 12);
+    const rising = points[points.length - 1] >= points[0];
+    const color = rising ? "#34d399" : "#f87171";
 
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "rgba(52, 211, 153, 0.3)");
-    gradient.addColorStop(1, "rgba(52, 211, 153, 0.0)");
+    gradient.addColorStop(0, rising ? "rgba(52, 211, 153, 0.3)" : "rgba(248, 113, 113, 0.3)");
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
 
     ctx.beginPath();
-    const stepX = width / (points.length - 1);
-
-    points.forEach((val, i) => {
-        const x = i * stepX;
-        const normalizedY = (val - minVal) / (maxVal - minVal);
-        const y = height - 6 - (normalizedY * (height - 12));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-
+    points.forEach((val, i) => (i === 0 ? ctx.moveTo(0, yOf(val)) : ctx.lineTo(i * stepX, yOf(val))));
     ctx.lineTo(width, height);
     ctx.lineTo(0, height);
     ctx.closePath();
@@ -436,16 +446,10 @@ export function drawBtcSparkline(): void {
     ctx.fill();
 
     ctx.beginPath();
-    points.forEach((val, i) => {
-        const x = i * stepX;
-        const normalizedY = (val - minVal) / (maxVal - minVal);
-        const y = height - 6 - (normalizedY * (height - 12));
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#34d399";
+    points.forEach((val, i) => (i === 0 ? ctx.moveTo(0, yOf(val)) : ctx.lineTo(i * stepX, yOf(val))));
+    ctx.strokeStyle = color;
     ctx.lineWidth = 2.5;
-    ctx.shadowColor = "#34d399";
+    ctx.shadowColor = color;
     ctx.shadowBlur = 8;
     ctx.stroke();
 }

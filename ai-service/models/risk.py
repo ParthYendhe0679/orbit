@@ -1,5 +1,5 @@
 """
-backend/models/risk.py — ORBIT Phase 7 Risk Guard Data Contracts
+ai-service/models/risk.py — ORBIT Phase 7 Risk Guard Data Contracts
 
 Pydantic v2 schemas defining the standardized risk evaluation contracts,
 dimension assessments (volatility, conflict, consensus, analysis quality,

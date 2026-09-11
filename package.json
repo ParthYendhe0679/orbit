@@ -4,15 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "concurrently -n \"BACKEND,AI\" -c \"cyan,magenta\" \"npm run dev:backend\" \"npm run dev:ai\"",
+    "dev": "concurrently -n \"BACKEND,AI,STREAM\" -c \"cyan,magenta,yellow\" \"npm run dev:backend\" \"npm run dev:ai\" \"npm run dev:stream\"",
     "dev:backend": "cd backend && go run .",
     "dev:ai": "cd ai-service && python -m uvicorn main:app --reload --port 8001",
+    "dev:stream": "cd go-stream && go run . --port 8002",
     "build": "esbuild src/index.ts --bundle --outfile=frontend/app.bundle.js --format=iife --target=es2022 --sourcemap",
     "watch": "esbuild src/index.ts --bundle --outfile=frontend/app.bundle.js --format=iife --target=es2022 --sourcemap --watch",
     "typecheck": "tsc --noEmit",
     "start:all": "run_all.bat",
     "build:backend": "cd backend && go build -o bin/backend.exe .",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run typecheck && cd backend && go test ./... && cd ../go-stream && go test ./... && cd .. && python -m pytest tests"
   },
   "keywords": [],
   "author": "",

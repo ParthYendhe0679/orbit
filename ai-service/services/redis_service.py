@@ -1,11 +1,11 @@
 """
-backend/services/redis_service.py — Strategic Redis/Valkey Caching Compatibility Shim.
+ai-service/services/redis_service.py — Strategic Redis/Valkey Caching Compatibility Shim.
 
 Routes all operations through the centralized Aiven Valkey Manager in valkey_service.py.
 Maintains 100% backward compatibility for legacy imports.
 """
 
-from backend.services.valkey_service import valkey_service, cache_service, ValkeyManager
+from services.valkey_service import valkey_service, cache_service, ValkeyManager
 
 HybridRedisCache = ValkeyManager
 

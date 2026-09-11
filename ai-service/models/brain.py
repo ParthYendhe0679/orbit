@@ -1,5 +1,5 @@
 """
-backend/models/brain.py — ORBIT Phase 6 Brain Data Contracts
+ai-service/models/brain.py — ORBIT Phase 6 Brain Data Contracts
 
 Pydantic v2 schemas defining the unified intelligence context, market summary,
 AI agent summary, strategy summary, consensus summary, key evidence items,
@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
-from backend.models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
+from models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
 
 
 class CompletenessTier(str, Enum):

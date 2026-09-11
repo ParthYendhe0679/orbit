@@ -1,33 +1,44 @@
 /**
  * ORBIT Trading Terminal — Market Data Service
- * Interfaces with Alpha Vantage quotes, historical OHLCV candles, and cached financial news
+ * Real quotes, OHLCV history, symbol search and news from the ai-service
+ * (public endpoints behind the Go gateway).
  */
 
-import { apiClient } from "./apiClient";
-import { MarketQuote, MarketHistoryResponse, NewsArticle } from "../types/market";
+import { apiClient, authFetch, unwrapData } from "./apiClient";
+import { MarketQuote, MarketHistorySnapshot, NewsHeadline, NewsResponse, SymbolSearchResult } from "../types/market";
+
+async function getNews(url: string, signal?: AbortSignal): Promise<NewsHeadline[]> {
+    const res = await authFetch(url, { signal });
+    if (!res.ok) throw new Error(`News request failed with status ${res.status}`);
+    const data = (await res.json()) as Partial<NewsResponse>;
+    return Array.isArray(data.headlines) ? data.headlines : [];
+}
 
 export const marketService = {
-    async getQuote(symbol: string): Promise<MarketQuote> {
+    getQuote(symbol: string): Promise<MarketQuote> {
         return apiClient.get<MarketQuote>(`/api/market/quote?symbol=${encodeURIComponent(symbol)}`);
     },
 
-    async getHistory(symbol: string, timeframe: string = "1d"): Promise<MarketHistoryResponse> {
-        return apiClient.get<MarketHistoryResponse>(
-            `/api/market/history?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+    async getHistory(symbol: string, period: string = "60d", interval: string = "1d"): Promise<MarketHistorySnapshot> {
+        return unwrapData(
+            await apiClient.get<{ ok: boolean; data: MarketHistorySnapshot }>(
+                `/api/market/history?symbol=${encodeURIComponent(symbol)}&period=${encodeURIComponent(period)}&interval=${encodeURIComponent(interval)}`
+            )
         );
     },
 
-    async getGlobalNews(signal?: AbortSignal): Promise<NewsArticle[]> {
-        const res = await fetch("/api/news/global", { signal });
-        if (!res.ok) throw new Error(`Global news failed with status ${res.status}`);
-        const data = await res.json();
-        return Array.isArray(data) ? data : data.news || data.articles || [];
+    async searchSymbols(query: string, market?: string): Promise<SymbolSearchResult[]> {
+        const params = new URLSearchParams({ q: query });
+        if (market) params.set("market", market);
+        const res = await apiClient.get<{ ok: boolean; results?: SymbolSearchResult[] }>(`/api/market/search?${params.toString()}`);
+        return Array.isArray(res.results) ? res.results : [];
     },
 
-    async getSymbolNews(symbol: string, signal?: AbortSignal): Promise<NewsArticle[]> {
-        const res = await fetch(`/api/news?symbol=${encodeURIComponent(symbol)}`, { signal });
-        if (!res.ok) throw new Error(`Symbol news failed with status ${res.status}`);
-        const data = await res.json();
-        return Array.isArray(data) ? data : data.news || data.articles || [];
+    getGlobalNews(signal?: AbortSignal): Promise<NewsHeadline[]> {
+        return getNews("/api/news/global", signal);
+    },
+
+    getSymbolNews(symbol: string, signal?: AbortSignal): Promise<NewsHeadline[]> {
+        return getNews(`/api/news?symbol=${encodeURIComponent(symbol)}`, signal);
     }
 };

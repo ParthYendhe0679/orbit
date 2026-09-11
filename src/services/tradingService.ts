@@ -1,82 +1,68 @@
 /**
  * ORBIT Trading Terminal — Trading Service
- * Manages open positions, pending orders, trade execution, and closure lifecycle
+ * Open positions, pending orders, trade history and position closes.
+ *
+ * user_id is optional everywhere: the gateway scopes every request to the
+ * signed-in account and refuses a user_id that names anyone else.
  */
 
 import { apiClient } from "./apiClient";
-import {
-    Position,
-    PendingOrder,
-    PartialCloseRequest,
-    PartialCloseResponse,
-    FullCloseResponse,
-    TradeHistoryResponse,
-    TradeHistoryQuery
-} from "../types/trading";
+import { Position, PendingOrder, TradeHistoryResponse, TradeHistoryQuery } from "../types/trading";
+
+type UserId = number | string | null | undefined;
+
+function withUser(path: string, userId: UserId, params: URLSearchParams = new URLSearchParams()): string {
+    if (userId !== null && userId !== undefined && userId !== "") params.set("user_id", String(userId));
+    const qs = params.toString();
+    return qs ? `${path}?${qs}` : path;
+}
+
+export interface CloseResult {
+    ok: boolean;
+    realized_pnl?: number;
+    [key: string]: unknown;
+}
 
 export const tradingService = {
-    async getOpenPositions(userId: number | string): Promise<Position[]> {
-        const res = await apiClient.get<{ positions?: Position[]; trades?: Position[] } | Position[]>(
-            `/api/trades/open?user_id=${encodeURIComponent(userId)}`
-        );
-        if (Array.isArray(res)) return res;
+    async getOpenPositions(userId?: UserId): Promise<Position[]> {
+        const res = await apiClient.get<{ positions?: Position[]; trades?: Position[] }>(withUser("/api/trades/open", userId));
         return res.positions || res.trades || [];
     },
 
-    async getPendingOrders(userId: number | string): Promise<PendingOrder[]> {
-        const res = await apiClient.get<{ orders?: PendingOrder[]; pending?: PendingOrder[] } | PendingOrder[]>(
-            `/api/trades/pending?user_id=${encodeURIComponent(userId)}`
-        );
-        if (Array.isArray(res)) return res;
-        return res.orders || res.pending || [];
+    async getPendingOrders(userId?: UserId): Promise<PendingOrder[]> {
+        const res = await apiClient.get<{ orders?: PendingOrder[] }>(withUser("/api/trades/pending", userId));
+        return res.orders || [];
     },
 
     async getTradeHistory(query: TradeHistoryQuery = {}): Promise<TradeHistoryResponse> {
         const params = new URLSearchParams();
-        if (query.user_id !== undefined) params.set("user_id", String(query.user_id));
-        if (query.asset) params.set("asset", query.asset);
-        if (query.limit !== undefined) params.set("limit", String(query.limit));
-        if (query.offset !== undefined) params.set("offset", String(query.offset));
-
-        const res = await apiClient.get<TradeHistoryResponse | { trades?: Position[]; total?: number }>(
-            `/api/trades/history?${params.toString()}`
-        );
-
-        if ("trades" in res && Array.isArray(res.trades)) {
-            return {
-                trades: res.trades as unknown as TradeHistoryResponse["trades"],
-                total: res.total || res.trades.length,
-                page: Math.floor((query.offset || 0) / (query.limit || 10)),
-                limit: query.limit || 10
-            };
+        const limit = query.limit ?? 20;
+        const offset = query.offset ?? 0;
+        params.set("limit", String(limit));
+        params.set("offset", String(offset));
+        for (const key of ["symbol", "market", "side", "outcome", "source"] as const) {
+            const value = query[key];
+            if (value) params.set(key, value);
         }
-        return { trades: [], total: 0, page: 0, limit: 10 };
+        const res = await apiClient.get<{ trades?: TradeHistoryResponse["trades"]; total?: number }>(
+            withUser("/api/trades/history", query.user_id, params)
+        );
+        const trades = Array.isArray(res.trades) ? res.trades : [];
+        return {
+            trades,
+            total: typeof res.total === "number" ? res.total : trades.length,
+            page: limit > 0 ? Math.floor(offset / limit) : 0,
+            limit
+        };
     },
 
-    async partialCloseTrade(tradeId: number, req: PartialCloseRequest): Promise<PartialCloseResponse> {
-        return apiClient.post<PartialCloseResponse>(`/api/trades/${tradeId}/partial-close`, req);
+    closePositionPartial(tradeId: number, quantity: number, userId?: UserId): Promise<CloseResult> {
+        const body: Record<string, unknown> = { quantity };
+        if (userId !== null && userId !== undefined && userId !== "") body.user_id = Number(userId);
+        return apiClient.post<CloseResult>(`/api/trades/${tradeId}/close`, body);
     },
 
-    async closePositionPartial(tradeId: number, quantity: number, userId?: number | string): Promise<{ ok: boolean; realized_pnl: number }> {
-        return apiClient.post<{ ok: boolean; realized_pnl: number }>(`/api/trades/${tradeId}/close`, {
-            quantity,
-            user_id: userId ? Number(userId) : undefined
-        });
-    },
-
-    async fullCloseTrade(tradeId: number, userId: number | string): Promise<FullCloseResponse> {
-        return apiClient.post<FullCloseResponse>(`/api/trades/${tradeId}/close/full?user_id=${encodeURIComponent(userId)}`);
-    },
-
-    async closePositionFull(tradeId: number, userId?: number | string): Promise<{ ok: boolean; realized_pnl: number }> {
-        const query = userId ? `?user_id=${encodeURIComponent(userId)}` : "";
-        return apiClient.post<{ ok: boolean; realized_pnl: number }>(`/api/trades/${tradeId}/close/full${query}`, {});
-    },
-
-    async cancelOrder(orderId: number, userId: number | string): Promise<{ ok: boolean; message?: string }> {
-        return apiClient.post<{ ok: boolean; message?: string }>(`/api/orders/${orderId}/cancel`, {
-            user_id: userId,
-            order_id: orderId
-        });
+    closePositionFull(tradeId: number, userId?: UserId): Promise<CloseResult> {
+        return apiClient.post<CloseResult>(withUser(`/api/trades/${tradeId}/close/full`, userId), {});
     }
 };

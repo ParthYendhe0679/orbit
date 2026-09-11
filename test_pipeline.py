@@ -1,22 +1,22 @@
 import asyncio
 import sys
 import traceback
-sys.path.insert(0, ".")
+sys.path.insert(0, "ai-service")
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import pandas as pd
-import backend.database as db
-from backend.services.market_data_service import market_service
+import database as db
+from services.market_data_service import market_service
 
-from backend.agents.chart_analyst import find_support_resistance
-from backend.agents.indicator_analyst import analyze_indicators
-from backend.agents.news_analyst import analyze_sentiment
-from backend.agents.strategy_judge import evaluate_strategies
-from backend.agents.risk_planner import plan_trade
-from backend.agents.execution_agent import check_and_execute_trades
-from backend.agents.portfolio_monitor import monitor_positions
+from agents.chart_analyst import find_support_resistance
+from agents.indicator_analyst import analyze_indicators
+from agents.news_analyst import analyze_sentiment
+from agents.strategy_judge import evaluate_strategies
+from agents.risk_planner import plan_trade
+from agents.execution_agent import check_and_execute_trades
+from agents.portfolio_monitor import monitor_positions
 
 def log(agent, msg):
     safe_msg = str(msg)

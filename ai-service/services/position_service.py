@@ -1,5 +1,5 @@
 """
-backend/services/position_service.py — Single Source of Truth for Positions, P&L, and Portfolio State.
+ai-service/services/position_service.py — Single Source of Truth for Positions, P&L, and Portfolio State.
 
 Authoritative layer for:
   - Open positions with live market valuation and P&L
@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import logging
 import asyncio
 
-from backend.database import (
+from database import (
     get_user_balance,
     get_open_positions,
     get_position_by_id,
@@ -25,8 +25,8 @@ from backend.database import (
     partially_close_position,
     fully_close_position,
 )
-from backend.services.market_data_service import MarketDataService, market_service
-from backend.services.valkey_service import valkey_service, cache_service
+from services.market_data_service import MarketDataService, market_service
+from services.valkey_service import valkey_service, cache_service
 
 logger = logging.getLogger("orbit.position_service")
 

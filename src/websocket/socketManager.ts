@@ -1,6 +1,11 @@
 /**
- * ORBIT Trading Terminal — Dual WebSocket Connection Manager
- * Coordinates primary Python WebSocket (:8000/ws) and Go stream hub (:8001/ws)
+ * ORBIT Trading Terminal — WebSocket Connection Manager
+ *
+ * Both sockets go to the Go gateway on the page's own origin:
+ *   /ws         private channel (wallet, positions, bot events, agent pipeline).
+ *               The gateway authenticates the handshake from the session
+ *               cookie and binds it to that account; no identity is sent.
+ *   /ws/stream  public market ticks from the orbit-stream hub.
  */
 
 import {
@@ -11,6 +16,9 @@ import {
 
 export type WebSocketListener<T extends WebSocketInboundMessage = WebSocketInboundMessage> = (message: T) => void;
 
+/** Fired when the private socket closes without ever opening (rejected handshake or outage). */
+export const SOCKET_FAILED_EVENT = "orbit:socket-failed";
+
 export class SocketManager {
     private primarySocket: WebSocket | null = null;
     private streamSocket: WebSocket | null = null;
@@ -20,12 +28,9 @@ export class SocketManager {
 
     private intentionallyClosed: boolean = false;
     private reconnectAttempts: number = 0;
-    private maxReconnectAttempts: number = 30;
+    private readonly maxReconnectAttempts: number = 30;
 
     private listeners: Map<WebSocketEventType | "all", Set<WebSocketListener>> = new Map();
-
-    private currentUserId: number | string | null = null;
-    private currentUsername: string | null = null;
 
     constructor() {
         this.listeners.set("all", new Set());
@@ -46,25 +51,32 @@ export class SocketManager {
     private emit(event: WebSocketEventType, message: WebSocketInboundMessage): void {
         const specific = this.listeners.get(event);
         if (specific) {
-            specific.forEach(cb => {
+            specific.forEach((cb) => {
                 try { cb(message); } catch (err) { console.error(`[WS emit error ${event}]:`, err); }
             });
         }
         const all = this.listeners.get("all");
         if (all) {
-            all.forEach(cb => {
+            all.forEach((cb) => {
                 try { cb(message); } catch (err) { console.error("[WS emit all error]:", err); }
             });
         }
     }
 
-    public connect(userId: number | string, username: string): void {
-        this.currentUserId = userId;
-        this.currentUsername = username;
-        this.intentionallyClosed = false;
+    private url(path: string): string {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        return `${protocol}//${window.location.host}${path}`;
+    }
 
-        this.connectPrimary();
-        this.connectStreamHub();
+    private static live(socket: WebSocket | null): boolean {
+        return !!socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
+    }
+
+    /** Opens both sockets (idempotent: an open or connecting socket is kept). */
+    public connect(): void {
+        this.intentionallyClosed = false;
+        if (!SocketManager.live(this.primarySocket)) this.connectPrimary();
+        if (!SocketManager.live(this.streamSocket)) this.connectStreamHub();
     }
 
     public disconnect(): void {
@@ -116,47 +128,45 @@ export class SocketManager {
     }
 
     private connectPrimary(): void {
-        if (!this.currentUserId) return;
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const host = window.location.hostname || "127.0.0.1";
-        const wsUrl = `${protocol}//${host}:8000/ws?user_id=${encodeURIComponent(this.currentUserId)}&username=${encodeURIComponent(this.currentUsername || "Trader")}`;
-
+        let socket: WebSocket;
+        let opened = false;
         try {
-            this.primarySocket = new WebSocket(wsUrl);
+            socket = new WebSocket(this.url("/ws"));
         } catch (err) {
             console.warn("[WS connect error]:", err);
             this.schedulePrimaryReconnect();
             return;
         }
+        this.primarySocket = socket;
 
-        this.primarySocket.onopen = () => {
-            console.log("[WS] Connected to primary ORBIT engine");
+        socket.onopen = () => {
+            opened = true;
             this.reconnectAttempts = 0;
         };
 
-        this.primarySocket.onmessage = (event: MessageEvent) => {
+        socket.onmessage = (event: MessageEvent) => {
             try {
                 const data = JSON.parse(event.data) as WebSocketInboundMessage;
                 if (!data || !data.type) return;
-
-                // Deduplicate tick updates if Go high-speed hub is actively streaming
-                if ((data.type === "tick" || data.type === "price_update") && this.isStreamHubOpen()) {
-                    return;
+                if (data.type === "auth_error") {
+                    // The account is no longer recognised: stop reconnecting.
+                    this.intentionallyClosed = true;
                 }
-
                 this.emit(data.type, data);
             } catch (parseErr) {
                 console.warn("[WS message parse error]:", parseErr);
             }
         };
 
-        this.primarySocket.onclose = () => {
+        socket.onclose = () => {
+            if (this.primarySocket === socket) this.primarySocket = null;
             if (this.intentionallyClosed) return;
+            if (!opened) window.dispatchEvent(new CustomEvent(SOCKET_FAILED_EVENT));
             this.schedulePrimaryReconnect();
         };
 
-        this.primarySocket.onerror = (err) => {
-            console.warn("[WS primary error]:", err);
+        socket.onerror = () => {
+            // onclose follows and handles reconnection.
         };
     }
 
@@ -166,55 +176,39 @@ export class SocketManager {
             console.warn("[WS] Max reconnect attempts reached");
             return;
         }
-
         const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
         this.reconnectAttempts++;
-
         if (this.primaryReconnectTimer) clearTimeout(this.primaryReconnectTimer);
-        this.primaryReconnectTimer = window.setTimeout(() => {
-            this.connectPrimary();
-        }, delay);
+        this.primaryReconnectTimer = window.setTimeout(() => this.connectPrimary(), delay);
     }
 
     private connectStreamHub(): void {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const host = window.location.hostname || "127.0.0.1";
-        const hubUrl = `${protocol}//${host}:8001/ws`;
-
+        let socket: WebSocket;
         try {
-            this.streamSocket = new WebSocket(hubUrl);
+            socket = new WebSocket(this.url("/ws/stream"));
         } catch {
             return;
         }
+        this.streamSocket = socket;
 
-        this.streamSocket.onopen = () => {
-            console.log("[orbit-stream] Go hub connected — high-frequency tick stream active");
-        };
-
-        this.streamSocket.onmessage = (event: MessageEvent) => {
+        socket.onmessage = (event: MessageEvent) => {
             try {
                 const data = JSON.parse(event.data) as WebSocketInboundMessage;
-                if (!data || !data.type) return;
-
-                // Route tick & metrics from Go hub
-                if (data.type === "tick" || data.type === "metrics") {
-                    this.emit(data.type, data);
-                }
+                if (data && data.type === "tick") this.emit("tick", data);
             } catch {
                 // Ignore malformed hub frames
             }
         };
 
-        this.streamSocket.onclose = () => {
+        socket.onclose = () => {
+            if (this.streamSocket === socket) this.streamSocket = null;
             if (this.intentionallyClosed) return;
             if (this.streamReconnectTimer) clearTimeout(this.streamReconnectTimer);
-            this.streamReconnectTimer = window.setTimeout(() => {
-                this.connectStreamHub();
-            }, 3000);
+            this.streamReconnectTimer = window.setTimeout(() => this.connectStreamHub(), 3000);
         };
 
-        this.streamSocket.onerror = () => {
-            // Fail silently; primary Python WebSocket handles ticks seamlessly as fallback
+        socket.onerror = () => {
+            // The private socket still delivers the terminal's own ticks.
         };
     }
 

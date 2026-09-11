@@ -295,41 +295,4 @@ export interface ExplainabilityEvaluationResult {
 
 // --- 9. AI Market Copilot (Phase 12) ---
 
-export interface CopilotChatMessage {
-    role: "user" | "assistant" | "system";
-    content: string;
-    timestamp?: string;
-}
-
-export interface CopilotChatRequest {
-    message: string;
-    symbol?: string;
-    timeframe?: string;
-    session_id?: string;
-    response_mode?: string;
-    selected_asset?: string;
-    selected_market?: string;
-}
-
-export interface CopilotChatResponse {
-    reply: string;
-    intent: string;
-    depth: string;
-    symbol: string;
-    timeframe: string;
-    session_id: string;
-    latency_ms: number;
-    model_used?: string;
-}
-
-export interface CopilotContextResponse {
-    symbol: string;
-    timeframe: string;
-    decision_stance: string;
-    confidence: number;
-    risk_level: string;
-    risk_score: number;
-    opportunity_level: string;
-    opportunity_score: number;
-    active_setups: string[];
-}
+// Copilot request/response contracts live in ./copilot.ts.

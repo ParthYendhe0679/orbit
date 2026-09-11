@@ -18,6 +18,8 @@ import json
 import time
 import urllib.request
 import websockets
+import sys
+sys.path.insert(0, "ai-service")
 from datetime import datetime
 
 BASE_URL = "http://127.0.0.1:8000"
@@ -256,7 +258,7 @@ async def run_all_tests():
     # TEST 9: Valkey offline graceful fallback
     # -------------------------------------------------------------
     try:
-        from backend.services.valkey_service import valkey_service
+        from services.valkey_service import valkey_service
         # Simulate Valkey network partition
         valkey_service._force_offline = True
         
@@ -283,7 +285,7 @@ async def run_all_tests():
         log_test(9, "Valkey offline graceful fallback & auto-recovery", passed, f"Degraded status: {fallback_health.get('status')}, Fallback val: {val}")
     except Exception as e:
         log_test(9, "Valkey offline fallback", False, str(e))
-        from backend.services.valkey_service import valkey_service
+        from services.valkey_service import valkey_service
         valkey_service._force_offline = False
         valkey_service.connect()
 
@@ -291,7 +293,7 @@ async def run_all_tests():
     # TEST 10: API rate protection (Single-flight coalescing)
     # -------------------------------------------------------------
     try:
-        from backend.services.market_data_service import market_service
+        from services.market_data_service import market_service
         # Test that multiple concurrent calls to get_price for the same symbol do not race
         tasks = [market_service.get_price(TEST_SYMBOL) for _ in range(5)]
         results = await asyncio.gather(*tasks)

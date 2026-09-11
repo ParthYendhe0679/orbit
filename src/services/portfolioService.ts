@@ -1,17 +1,22 @@
 /**
  * ORBIT Trading Terminal — Portfolio Service
- * Retrieves real-time capital balance, margin utilization, and performance reports
+ * Authoritative account state (dashboard summary) and the performance report.
  */
 
 import { apiClient } from "./apiClient";
-import { DashboardSummary, PortfolioReport } from "../types/portfolio";
+import { DashboardSummaryResponse, PortfolioReport, ReportResponse } from "../types/portfolio";
+
+function userQuery(userId?: number | string | null): string {
+    return userId !== null && userId !== undefined && userId !== "" ? `?user_id=${encodeURIComponent(userId)}` : "";
+}
 
 export const portfolioService = {
-    async getDashboardSummary(userId: number | string): Promise<DashboardSummary> {
-        return apiClient.get<DashboardSummary>(`/api/dashboard/summary?user_id=${encodeURIComponent(userId)}`);
+    getDashboardSummary(userId?: number | string | null): Promise<DashboardSummaryResponse> {
+        return apiClient.get<DashboardSummaryResponse>(`/api/dashboard/summary${userQuery(userId)}`);
     },
 
-    async getReport(userId: number | string): Promise<PortfolioReport> {
-        return apiClient.get<PortfolioReport>(`/api/report?user_id=${encodeURIComponent(userId)}`);
+    async getReport(userId?: number | string | null): Promise<PortfolioReport> {
+        const res = await apiClient.get<ReportResponse>(`/api/report${userQuery(userId)}`);
+        return res.report;
     }
 };

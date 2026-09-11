@@ -5,6 +5,7 @@
  */
 
 import { autoBotService } from "../services/autoBotService";
+import { authFetch } from "../services/apiClient";
 import { store } from "../state/store";
 import { formatINR, esc } from "../utils/formatters";
 import { safeText, getElement } from "../utils/dom";
@@ -55,7 +56,7 @@ let _botPollTimer: any = null;
 let _botBusy = false;
 
 function botUserId(): string | number | null {
-    return store.get("currentUserId") || localStorage.getItem("orbit_user_id") || null;
+    return store.get("currentUserId") || null;
 }
 
 export function botIsLive(session: BotSessionDetail | null): boolean {
@@ -63,7 +64,7 @@ export function botIsLive(session: BotSessionDetail | null): boolean {
 }
 
 async function botFetch(url: string, options?: RequestInit): Promise<any> {
-    const res = await fetch(url, options);
+    const res = await authFetch(url, options);
     let data: any = {};
     try {
         data = await res.json();

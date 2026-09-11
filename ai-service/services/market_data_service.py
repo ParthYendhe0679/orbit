@@ -1,5 +1,5 @@
 """
-backend/services/market_data_service.py — Centralized Market Data Infrastructure for ORBIT.
+ai-service/services/market_data_service.py — Centralized Market Data Infrastructure for ORBIT.
 
 Implements the Phase 2 Market Data System:
   - Provider Abstraction Layer (YahooFinanceProvider via BaseMarketDataProvider)
@@ -28,7 +28,7 @@ import yfinance as yf
 # Load .env variables (e.g. ALPHA_VANTAGE_API_KEY)
 load_dotenv()
 
-from backend.models.market import (
+from models.market import (
     Asset,
     CompanyOverview,
     HistoricalCandle,
@@ -42,7 +42,7 @@ from backend.models.market import (
 
 logger = logging.getLogger("orbit.market_data")
 
-from backend.services.valkey_service import valkey_service
+from services.valkey_service import valkey_service
 
 # ---------------------------------------------------------------------------
 # Pre-indexed Popular Symbols for Autocomplete / Quick Search
@@ -1201,7 +1201,7 @@ class MarketDataService:
         # Fallback to existing news headlines if Alpha Vantage returns empty
         if not items:
             try:
-                from backend.agents.news_analyst import get_headlines
+                from agents.news_analyst import get_headlines
                 headlines = await asyncio.to_thread(get_headlines, clean_sym)
                 for h in headlines[:10]:
                     items.append(

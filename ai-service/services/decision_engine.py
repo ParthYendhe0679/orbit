@@ -1,5 +1,5 @@
 """
-backend/services/decision_engine.py — ORBIT Decision Engine (Phase 9).
+ai-service/services/decision_engine.py — ORBIT Decision Engine (Phase 9).
 
 Centralized, deterministic, explainable, and evidence-based market stance synthesis system.
 Synthesizes intelligence across the full ORBIT stack:
@@ -21,13 +21,13 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from backend.models.brain import (
+from models.brain import (
     BrainAnalysisContext,
     BrainStatus,
     CompletenessTier,
 )
-from backend.models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
-from backend.models.decision import (
+from models.consensus import ConsensusSignal, AgreementLevel, ConsensusStatus
+from models.decision import (
     DecisionClarity,
     DecisionDiagnostics,
     DecisionEvaluationResult,
@@ -35,15 +35,15 @@ from backend.models.decision import (
     DecisionStatus,
     MarketStance,
 )
-from backend.models.opportunity import (
+from models.opportunity import (
     OpportunityEvaluationResult,
     OpportunityLevel,
     OpportunityStatus,
 )
-from backend.models.risk import RiskEvaluationResult, RiskLevel, RiskStatus
-from backend.services.opportunity_engine import OpportunityEngine, opportunity_engine
-from backend.services.orbit_brain import OrbitBrain, orbit_brain
-from backend.services.risk_guard import RiskGuard, risk_guard
+from models.risk import RiskEvaluationResult, RiskLevel, RiskStatus
+from services.opportunity_engine import OpportunityEngine, opportunity_engine
+from services.orbit_brain import OrbitBrain, orbit_brain
+from services.risk_guard import RiskGuard, risk_guard
 
 logger = logging.getLogger("orbit.decision_engine")
 

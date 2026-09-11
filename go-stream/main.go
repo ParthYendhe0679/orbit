@@ -1,25 +1,34 @@
-// orbit-stream — ORBIT Phase 11 Go WebSocket Tick Hub
+// orbit-stream — ORBIT Go WebSocket Tick Hub
 //
-// Role: high-concurrency broadcast server sitting between the Python backend
-//       and browser clients. Python POSTs tick/metric payloads to /publish;
-//       all registered WebSocket clients receive them in < 1 ms.
+// Role: broadcast server for public market ticks. The ai-service's market
+// tick scheduler POSTs real quotes to /publish; every connected client
+// receives them. Browsers reach /ws through the Go gateway (/ws/stream), so
+// this service needs no public port.
 //
 // Endpoints:
-//   GET  /ws      — browser WebSocket connection
-//   POST /publish — Python backend delivers a JSON payload to broadcast
-//   GET  /health  — liveness probe
+//
+//	GET  /ws      — subscriber WebSocket (via the gateway)
+//	POST /publish — ai-service delivers a JSON frame to broadcast
+//	GET  /health  — liveness probe
+//
+// /publish requires the shared ORBIT_INTERNAL_TOKEN (X-Orbit-Internal-Token);
+// without a token configured it accepts loopback callers only. It never
+// accepts browser (Origin-bearing) requests, so no page can inject ticks.
 //
 // Build:  go build -o orbit-stream .
-// Run:    ./orbit-stream --port 8001
+// Run:    ./orbit-stream --port 8002
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -45,8 +54,9 @@ func newHub() *Hub {
 func (h *Hub) register(c *Client) {
 	h.mu.Lock()
 	h.clients[c] = true
+	n := len(h.clients)
 	h.mu.Unlock()
-	log.Printf("[hub] client connected — total: %d", len(h.clients))
+	log.Printf("[hub] client connected — total: %d", n)
 }
 
 func (h *Hub) unregister(c *Client) {
@@ -55,8 +65,9 @@ func (h *Hub) unregister(c *Client) {
 		delete(h.clients, c)
 		close(c.send)
 	}
+	n := len(h.clients)
 	h.mu.Unlock()
-	log.Printf("[hub] client disconnected — total: %d", len(h.clients))
+	log.Printf("[hub] client disconnected — total: %d", n)
 }
 
 // run drains the broadcast channel and fans out to every client.
@@ -77,7 +88,7 @@ func (h *Hub) run() {
 }
 
 // ---------------------------------------------------------------------------
-// Client — one goroutine per browser WebSocket
+// Client — one goroutine per subscriber WebSocket
 // ---------------------------------------------------------------------------
 
 type Client struct {
@@ -86,14 +97,13 @@ type Client struct {
 }
 
 var upgrader = websocket.Upgrader{
-	// Allow all origins — orbit-stream is local-only (localhost)
+	// Subscribers arrive through the gateway, which enforces the origin policy.
 	CheckOrigin:     func(r *http.Request) bool { return true },
 	ReadBufferSize:  1024,
 	WriteBufferSize: 4096,
 }
 
 // writePump drains the client send channel and writes to the WebSocket.
-// One goroutine per client — zero shared mutable state.
 func (c *Client) writePump(h *Hub) {
 	defer func() {
 		c.conn.Close()
@@ -105,9 +115,8 @@ func (c *Client) writePump(h *Hub) {
 	}
 }
 
-// readPump consumes incoming frames (ping/close/browser messages).
-// We don't act on browser→hub messages; we just need to drain them
-// so the WebSocket stack can send pong responses and detect disconnects.
+// readPump consumes incoming frames (ping/close) so the WebSocket stack can
+// answer pings and detect disconnects; subscriber messages are ignored.
 func (c *Client) readPump(h *Hub) {
 	defer h.unregister(c)
 	for {
@@ -135,16 +144,34 @@ func wsHandler(h *Hub) http.HandlerFunc {
 	}
 }
 
-// publishHandler receives a JSON payload from the Python backend and
-// enqueues it for broadcast to all connected browser WebSockets.
-//
-// Python calls:
-//
-//	httpx.post("http://localhost:8001/publish", json=payload, timeout=0.05)
-func publishHandler(h *Hub) http.HandlerFunc {
+// publishAuthorized accepts the ai-service: the shared token when one is
+// configured, otherwise loopback callers; browser requests never.
+func publishAuthorized(r *http.Request, token string) bool {
+	if r.Header.Get("Origin") != "" {
+		return false
+	}
+	if token != "" {
+		supplied := r.Header.Get("X-Orbit-Internal-Token")
+		return subtle.ConstantTimeCompare([]byte(supplied), []byte(token)) == 1
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// publishHandler receives a JSON payload from the ai-service and enqueues it
+// for broadcast to all connected subscribers.
+func publishHandler(h *Hub, token string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !publishAuthorized(r, token) {
+			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
@@ -171,7 +198,8 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func main() {
-	defaultPort := "8001"
+	// 8002 by default: 8000 is the gateway and 8001 the ai-service.
+	defaultPort := "8002"
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		defaultPort = envPort
 	} else if envStreamPort := os.Getenv("STREAM_PORT"); envStreamPort != "" {
@@ -180,12 +208,17 @@ func main() {
 	port := flag.String("port", defaultPort, "TCP port to listen on")
 	flag.Parse()
 
+	token := strings.TrimSpace(os.Getenv("ORBIT_INTERNAL_TOKEN"))
+	if token == "" {
+		log.Printf("[orbit-stream] ORBIT_INTERNAL_TOKEN not set: /publish accepts loopback callers only")
+	}
+
 	hub := newHub()
 	go hub.run()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", wsHandler(hub))
-	mux.HandleFunc("/publish", publishHandler(hub))
+	mux.HandleFunc("/publish", publishHandler(hub, token))
 	mux.HandleFunc("/health", healthHandler)
 
 	addr := ":" + *port

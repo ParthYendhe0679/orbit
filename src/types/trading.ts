@@ -106,6 +106,8 @@ export interface TradeHistoryQuery {
     market?: string;
     side?: string;
     outcome?: string;
+    /** "bot" or "manual" */
+    source?: string;
     limit?: number;
     offset?: number;
 }

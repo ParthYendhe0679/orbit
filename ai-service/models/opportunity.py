@@ -1,5 +1,5 @@
 """
-backend/models/opportunity.py — ORBIT Phase 8 Opportunity Engine Data Contracts
+ai-service/models/opportunity.py — ORBIT Phase 8 Opportunity Engine Data Contracts
 
 Pydantic v2 schemas defining the standardized trade opportunity evaluation contracts,
 opportunity levels, dimensional breakdowns (consensus, strategy, agent, risk, quality),

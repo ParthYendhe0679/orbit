@@ -1,5 +1,5 @@
 """
-backend/models/agent.py — Standardized AI Agent Data Contracts for ORBIT.
+ai-service/models/agent.py — Standardized AI Agent Data Contracts for ORBIT.
 
 Establishes uniform, validated data contracts for all specialized quantitative
 and intelligence agents, supporting deterministic scoring, explainability,

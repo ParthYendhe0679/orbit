@@ -1,5 +1,5 @@
 """
-backend/services/valkey_service.py — Centralized Aiven Valkey & Redis Connection Manager.
+ai-service/services/valkey_service.py — Centralized Aiven Valkey & Redis Connection Manager.
 
 Fulfills Phase 4 & Phase 5:
   - Single shared connection pool with TLS/SSL support

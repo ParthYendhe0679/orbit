@@ -38,3 +38,44 @@ os.environ.update(_ISOLATED_ENV)
 for p in (str(AI_SERVICE), str(ROOT)):
     if p not in sys.path:
         sys.path.insert(0, p)
+
+from urllib.parse import parse_qsl, urlsplit  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+GATEWAY_TOKEN = _ISOLATED_ENV["ORBIT_INTERNAL_TOKEN"]
+
+
+class GatewayClient(TestClient):
+    """
+    Stands in for the Go gateway: every /api and /ws call carries the shared
+    internal token and X-User-ID for the account the gateway would have
+    verified (taken from the request's own user_id). /internal/* calls are
+    left untouched so their own token checks stay under test.
+    """
+
+    def _as_gateway(self, url, kwargs):
+        path = urlsplit(str(url)).path
+        if path.startswith("/internal/"):
+            return kwargs
+        uid = None
+        body = kwargs.get("json")
+        if isinstance(body, dict) and body.get("user_id") is not None:
+            uid = body["user_id"]
+        params = kwargs.get("params")
+        if uid is None and isinstance(params, dict) and params.get("user_id") is not None:
+            uid = params["user_id"]
+        if uid is None:
+            uid = dict(parse_qsl(urlsplit(str(url)).query)).get("user_id")
+        headers = dict(kwargs.get("headers") or {})
+        headers.setdefault("X-Orbit-Internal-Token", GATEWAY_TOKEN)
+        if uid is not None:
+            headers.setdefault("X-User-ID", str(uid))
+        kwargs["headers"] = headers
+        return kwargs
+
+    def request(self, method, url, **kwargs):
+        return super().request(method, url, **self._as_gateway(url, kwargs))
+
+    def websocket_connect(self, url, subprotocols=None, **kwargs):
+        return super().websocket_connect(url, subprotocols=subprotocols, **self._as_gateway(url, kwargs))

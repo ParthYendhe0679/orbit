@@ -27,6 +27,21 @@ export function formatINR(number: number): string {
 }
 
 /**
+ * Formats an authoritative amount, or "—" when the value is missing — never a
+ * made-up default or "₹NaN".
+ */
+export function formatINRSafe(value: unknown): string {
+    const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+    return Number.isFinite(n) ? formatINR(n) : "—";
+}
+
+/** Signed variant of formatINRSafe ("+₹1,200.00" / "-₹40.00" / "—"). */
+export function formatSignedINR(value: unknown): string {
+    const text = formatINRSafe(value);
+    return text !== "—" && Number(value) >= 0 ? `+${text}` : text;
+}
+
+/**
  * Formats a percentage value with signed symbol (+/-).
  */
 export function formatPercent(value: number, decimals: number = 2): string {

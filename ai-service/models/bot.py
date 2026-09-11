@@ -1,5 +1,5 @@
 """
-backend/models/bot.py — ORBIT Auto-Trade Bot Session Contracts
+ai-service/models/bot.py — ORBIT Auto-Trade Bot Session Contracts
 
 A bot run is a user-scoped session with an explicit state machine. Its
 configuration is snapshotted when it starts; its P&L and trade counts are

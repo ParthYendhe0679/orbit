@@ -1,9 +1,11 @@
 /**
  * ORBIT Trading Terminal — AI Intelligence & Analysis Service
- * Manages API communication with Phases 3-12 quantitative engines
+ *
+ * The ai-service answers every analysis endpoint as {"ok": true, "data": result};
+ * these helpers return the result itself (or throw with the server's detail).
  */
 
-import { apiClient } from "./apiClient";
+import { apiClient, unwrapData } from "./apiClient";
 import {
     AgentOrchestrationResult,
     StrategyOrchestrationResult,
@@ -12,76 +14,80 @@ import {
     RiskEvaluationResult,
     OpportunityEvaluationResult,
     DecisionResult,
-    ExplainabilityEvaluationResult,
+    ExplainabilityEvaluationResult
+} from "../types/ai";
+import {
     CopilotChatRequest,
     CopilotChatResponse,
-    CopilotContextResponse
-} from "../types/ai";
+    CopilotContext,
+    ConversationDetail,
+    ConversationItem
+} from "../types/copilot";
+
+type Envelope<T> = { ok?: boolean; data?: T; detail?: unknown };
+
+function analysisUrl(path: string, symbol: string, timeframe: string): string {
+    return `${path}?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`;
+}
+
+async function getData<T>(url: string): Promise<T> {
+    return unwrapData(await apiClient.get<Envelope<T>>(url));
+}
 
 export const aiService = {
-    async analyzeAgents(symbol: string, timeframe: string = "1d"): Promise<AgentOrchestrationResult> {
-        return apiClient.get<AgentOrchestrationResult>(
-            `/api/agents/analyze?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    analyzeAgents(symbol: string, timeframe: string = "1d"): Promise<AgentOrchestrationResult> {
+        return getData(analysisUrl("/api/agents/analyze", symbol, timeframe));
     },
 
-    async evaluateStrategies(symbol: string, timeframe: string = "1d"): Promise<StrategyOrchestrationResult> {
-        return apiClient.get<StrategyOrchestrationResult>(
-            `/api/strategies/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    evaluateStrategies(symbol: string, timeframe: string = "1d"): Promise<StrategyOrchestrationResult> {
+        return getData(analysisUrl("/api/strategies/evaluate", symbol, timeframe));
     },
 
-    async evaluateConsensus(symbol: string, timeframe: string = "1d"): Promise<ConsensusResult> {
-        return apiClient.get<ConsensusResult>(
-            `/api/consensus/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    evaluateConsensus(symbol: string, timeframe: string = "1d"): Promise<ConsensusResult> {
+        return getData(analysisUrl("/api/consensus/evaluate", symbol, timeframe));
     },
 
-    async analyzeBrain(symbol: string, timeframe: string = "1d"): Promise<BrainAnalysisContext> {
-        return apiClient.get<BrainAnalysisContext>(
-            `/api/brain/analyze?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    analyzeBrain(symbol: string, timeframe: string = "1d"): Promise<BrainAnalysisContext> {
+        return getData(analysisUrl("/api/brain/analyze", symbol, timeframe));
     },
 
-    async evaluateRisk(symbol: string, timeframe: string = "1d"): Promise<RiskEvaluationResult> {
-        return apiClient.get<RiskEvaluationResult>(
-            `/api/risk/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    evaluateRisk(symbol: string, timeframe: string = "1d"): Promise<RiskEvaluationResult> {
+        return getData(analysisUrl("/api/risk/evaluate", symbol, timeframe));
     },
 
-    async evaluateOpportunity(symbol: string, timeframe: string = "1d"): Promise<OpportunityEvaluationResult> {
-        return apiClient.get<OpportunityEvaluationResult>(
-            `/api/opportunity/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    evaluateOpportunity(symbol: string, timeframe: string = "1d"): Promise<OpportunityEvaluationResult> {
+        return getData(analysisUrl("/api/opportunity/evaluate", symbol, timeframe));
     },
 
-    async evaluateDecision(symbol: string, timeframe: string = "1d"): Promise<DecisionResult> {
-        return apiClient.get<DecisionResult>(
-            `/api/decision/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    evaluateDecision(symbol: string, timeframe: string = "1d"): Promise<DecisionResult> {
+        return getData(analysisUrl("/api/decision/evaluate", symbol, timeframe));
     },
 
-    async evaluateExplainability(symbol: string, timeframe: string = "1d"): Promise<ExplainabilityEvaluationResult> {
-        return apiClient.get<ExplainabilityEvaluationResult>(
-            `/api/explain/evaluate?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
-    },
-
-    async evaluateExplanation(symbol: string, timeframe: string = "1d"): Promise<ExplainabilityEvaluationResult> {
-        return this.evaluateExplainability(symbol, timeframe);
+    evaluateExplanation(symbol: string, timeframe: string = "1d"): Promise<ExplainabilityEvaluationResult> {
+        return getData(analysisUrl("/api/explain/evaluate", symbol, timeframe));
     },
 
     async chatCopilot(req: CopilotChatRequest): Promise<CopilotChatResponse> {
-        return apiClient.post<CopilotChatResponse>("/api/copilot/chat", req);
+        return unwrapData(await apiClient.post<Envelope<CopilotChatResponse>>("/api/copilot/chat", req));
     },
 
-    async getCopilotContext(symbol: string, timeframe: string = "1d"): Promise<CopilotContextResponse> {
-        return apiClient.get<CopilotContextResponse>(
-            `/api/copilot/context?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+    getCopilotContext(symbol: string, timeframe: string = "1d"): Promise<CopilotContext> {
+        return getData(analysisUrl("/api/copilot/context", symbol, timeframe));
     },
 
-    async resetCopilotSession(symbol?: string): Promise<{ ok: boolean }> {
-        return apiClient.post<{ ok: boolean }>("/api/copilot/reset", { symbol });
+    async resetCopilotSession(conversationId: string): Promise<void> {
+        await apiClient.post<{ ok: boolean }>("/api/copilot/reset", { conversation_id: conversationId });
+    },
+
+    listConversations(limit: number = 40): Promise<ConversationItem[]> {
+        return getData(`/api/chat/conversations?limit=${encodeURIComponent(limit)}`);
+    },
+
+    getConversation(conversationId: string): Promise<ConversationDetail> {
+        return getData(`/api/chat/conversations/${encodeURIComponent(conversationId)}`);
+    },
+
+    async deleteConversation(conversationId: string): Promise<void> {
+        await apiClient.delete<{ ok: boolean }>(`/api/chat/conversations/${encodeURIComponent(conversationId)}`);
     }
 };
