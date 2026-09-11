@@ -92,7 +92,7 @@ export async function initClerkAuth(): Promise<any> {
             }
 
             if (!pubKey) {
-                pubKey = "pk_test_bm90ZWQtc2tpbmstNTkzOC5jbGVyay5hY2NvdW50cy5kZXYk";
+                pubKey = "pk_test_aGlwLWNhbWVsLTk3ODQuY2xlcmsuYWNjb3VudHMuZGV2JA";
             }
 
             const clerkScript = document.querySelector('script[src*="clerk"]');
