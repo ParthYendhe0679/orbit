@@ -14,8 +14,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 import yfinance as yf
 import pandas as pd
 
@@ -146,18 +145,15 @@ async def add_no_cache_header(request, call_next):
     return response
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
+@app.get("/index.html")
 async def serve_root():
-    index_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "index.html"))
-    if not os.path.isfile(index_file):
-        raise HTTPException(status_code=404, detail="The frontend is served by the Go gateway.")
-    with open(index_file, "r", encoding="utf-8") as f:
-        content = f.read()
-    response = HTMLResponse(content=content)
-    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
-    response.headers["Pragma"] = "no-cache"
-    response.headers["Expires"] = "0"
-    return response
+    # The app must be opened through the Go gateway: only the gateway issues the
+    # session cookie and forwards the verified identity. Served from here, a
+    # sign-in succeeds but every private call is refused with 401 and the user
+    # is signed straight back out.
+    gateway_url = os.getenv("ORBIT_GATEWAY_URL", "http://127.0.0.1:8000").rstrip("/")
+    return RedirectResponse(url=gateway_url + "/", status_code=307)
 
 
 @app.get("/health")
@@ -1219,11 +1215,18 @@ async def api_open_trade(req: OpenTradeRequest):
     trade_id = trade_dict["id"]
     res_balance = opened["balance"]
 
-    # 4. Broadcast real-time WebSocket events
+    # 4. Broadcast real-time WebSocket events immediately
     await manager.send_to_user(user_id, {"type": "trade_opened", "data": trade_dict})
-    live_open = await position_service.get_live_open_positions(user_id)
-    await manager.send_to_user(user_id, {"type": "positions_updated", "data": {"trades": live_open}})
     await manager.send_to_user(user_id, {"type": "wallet", "balance": res_balance})
+
+    async def _broadcast_open():
+        try:
+            live_open = await position_service.get_live_open_positions(user_id)
+            await manager.send_to_user(user_id, {"type": "positions_updated", "data": {"trades": live_open}})
+        except Exception as e:
+            logger.error(f"Error in post-open broadcast: {e}")
+
+    asyncio.create_task(_broadcast_open())
 
     return {
         "ok": True,
@@ -1268,31 +1271,32 @@ async def api_close_position(trade_id: int, req: ClosePositionRequest):
             close_qty = round(rem_qty * (pct / 100.0), 6)
 
         if req.full_close or close_qty is None or float(close_qty) >= rem_qty:
-            result = await position_service.close_position_fully(trade_id, req.user_id)
+            result = await position_service.close_position_fully(trade_id, req.user_id, pos=pos, skip_summary=True)
         else:
             if float(close_qty) <= 0:
                 raise HTTPException(status_code=400, detail="Close quantity must be positive.")
-            result = await position_service.close_position_partially(trade_id, req.user_id, float(close_qty))
+            result = await position_service.close_position_partially(trade_id, req.user_id, float(close_qty), pos=pos, skip_summary=True)
 
-        # Auto-Trade Bot trades: activity event, session metrics and target / max-loss checks.
-        if pos.get("bot_session_id"):
-            await bot_engine.on_trade_closed(pos, result)
+        # Background task for broadcasting and full summary refresh so the client HTTP call returns in <300ms
+        async def _broadcast_and_sync():
+            try:
+                if pos.get("bot_session_id"):
+                    await bot_engine.on_trade_closed(pos, result)
+                summary = await position_service.get_account_and_dashboard_summary(req.user_id)
+                wallet_balance = summary.get("account", {}).get("available_balance", 0.0)
+                await manager.send_to_user(req.user_id, {"type": "wallet", "balance": wallet_balance})
+                live_open = summary.get("open_positions") if "open_positions" in summary else await position_service.get_live_open_positions(req.user_id)
+                await manager.send_to_user(req.user_id, {"type": "positions_updated", "data": {"trades": live_open}})
+                await manager.send_to_user(req.user_id, {"type": "dashboard_summary", "data": summary})
+                if req.full_close or result.get("status") == "closed":
+                    await manager.send_to_user(req.user_id, {"type": "trade_closed", "data": result})
+                else:
+                    await manager.send_to_user(req.user_id, {"type": "trade_updated", "data": result})
+                    await manager.send_to_user(req.user_id, {"type": "position_updated", "data": result})
+            except Exception as e:
+                logger.error(f"Error in post-close sync: {e}")
 
-        summary = result.get("summary") or await position_service.get_account_and_dashboard_summary(req.user_id)
-        wallet_balance = summary.get("account", {}).get("available_balance", 0.0)
-
-        # Broadcast state synchronization to user's connected WebSocket clients
-        await manager.send_to_user(req.user_id, {"type": "wallet", "balance": wallet_balance})
-        live_open = summary.get("open_positions") if "open_positions" in summary else await position_service.get_live_open_positions(req.user_id)
-        await manager.send_to_user(req.user_id, {"type": "positions_updated", "data": {"trades": live_open}})
-        await manager.send_to_user(req.user_id, {"type": "dashboard_summary", "data": summary})
-
-        # Also emit standard events per Part 21:
-        if req.full_close or result.get("status") == "closed":
-            await manager.send_to_user(req.user_id, {"type": "trade_closed", "data": result})
-        else:
-            await manager.send_to_user(req.user_id, {"type": "trade_updated", "data": result})
-            await manager.send_to_user(req.user_id, {"type": "position_updated", "data": result})
+        asyncio.create_task(_broadcast_and_sync())
 
         return {"ok": True, "success": True, "result": result, **result}
     except HTTPException:
@@ -2300,18 +2304,6 @@ async def market_tick_scheduler_loop():
             await asyncio.sleep(5.0)
 
 
-# Serve node_modules for local scripts, when present. StaticFiles raises at
-# import time if the directory is missing, which crashed the Docker image (it
-# never copies node_modules into the container).
-node_modules_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "node_modules"))
-if os.path.isdir(node_modules_path):
-    app.mount("/node_modules", StaticFiles(directory=node_modules_path), name="node_modules")
-else:
-    print("[startup] node_modules not found - skipping /node_modules mount.")
+# The Go gateway on :8000 serves the frontend and static assets; the ai-service
+# runs internal AI analytics and agent execution on :8001.
 
-# Serve static frontend files when present (must be defined AFTER the api
-# routes). The Go gateway serves the frontend; the ai-service container has no
-# frontend directory, and StaticFiles raises at import time if it is missing.
-frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-if os.path.isdir(frontend_path):
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

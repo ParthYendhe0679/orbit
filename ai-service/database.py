@@ -17,21 +17,80 @@ IS_POSTGRES = False
 if DATABASE_URL and (DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")):
     IS_POSTGRES = True
 
+_pg_pool = None
+
+class _PooledConnection:
+    """Wraps a pooled psycopg2 connection so .close() returns it to the pool instead of terminating TCP/TLS."""
+    def __init__(self, pool_inst, conn):
+        self._pool = pool_inst
+        self._conn = conn
+        self._closed = False
+
+    def close(self):
+        if not self._closed and self._conn is not None:
+            self._closed = True
+            try:
+                import psycopg2.extensions
+                if self._conn.status == psycopg2.extensions.STATUS_IN_TRANSACTION:
+                    self._conn.rollback()
+            except Exception:
+                pass
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                pass
+            self._conn = None
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def cursor(self, *args, **kwargs):
+        return self._conn.cursor(*args, **kwargs)
+
+    def commit(self):
+        return self._conn.commit()
+
+    def rollback(self):
+        return self._conn.rollback()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        from psycopg2 import pool
+        _pg_pool = pool.ThreadedConnectionPool(2, 15, DATABASE_URL, connect_timeout=6)
+    return _pg_pool
+
 def get_connection():
     if IS_POSTGRES:
         import psycopg2
+        pool_inst = _get_pg_pool()
         last_err = None
         for attempt in range(3):
             try:
-                conn = psycopg2.connect(DATABASE_URL, connect_timeout=4)
-                return conn
+                raw_conn = pool_inst.getconn()
+                if raw_conn.closed:
+                    try:
+                        pool_inst.putconn(raw_conn, close=True)
+                    except Exception:
+                        pass
+                    continue
+                return _PooledConnection(pool_inst, raw_conn)
             except Exception as e:
                 last_err = e
                 if attempt < 2:
-                    time.sleep(0.3 * (attempt + 1))
+                    time.sleep(0.1 * (attempt + 1))
         if last_err is not None:
-            raise last_err
-        raise ConnectionError("Failed to connect to PostgreSQL database after 3 attempts.")
+            try:
+                return psycopg2.connect(DATABASE_URL, connect_timeout=4)
+            except Exception:
+                raise last_err
+        raise ConnectionError("Failed to acquire PostgreSQL connection.")
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row

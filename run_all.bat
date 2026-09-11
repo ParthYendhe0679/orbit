@@ -32,8 +32,8 @@ echo [3/5] Starting orbit-stream tick hub on Port 8002...
 start "ORBIT Stream Hub (8002)" cmd /k "cd /d "%~dp0go-stream" && go run . --port 8002"
 
 REM Step 4: Launch Python AI Service (loopback only, port 8001)
-echo [4/5] Starting Python AI Service on Port 8001...
-start "ORBIT AI Service (8001)" cmd /k "cd /d "%~dp0ai-service" && python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload"
+echo [4/5] Starting Python AI Service on internal Port 8001 (backend only)...
+start "ORBIT AI Service (Internal 8001)" cmd /k "cd /d "%~dp0ai-service" && python -m uvicorn main:app --host 127.0.0.1 --port 8001 --reload"
 
 REM Step 5: Launch Go Backend Gateway (Port 8000)
 echo.
@@ -41,5 +41,7 @@ echo ============================================================
 echo   ORBIT TERMINAL LIVE AT: http://127.0.0.1:8000/
 echo ============================================================
 echo [5/5] Starting Go Backend Gateway on Port 8000...
+start "" "http://127.0.0.1:8000/"
 cd /d "%~dp0backend"
 go run .
+

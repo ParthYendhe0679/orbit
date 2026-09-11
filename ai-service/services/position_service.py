@@ -244,9 +244,10 @@ class PositionService:
         }, ttl_seconds=10)
         return summary
 
-    async def close_position_partially(self, trade_id: int, user_id: int, close_qty: float) -> Dict[str, Any]:
+    async def close_position_partially(self, trade_id: int, user_id: int, close_qty: float, pos: Optional[Dict[str, Any]] = None, skip_summary: bool = False) -> Dict[str, Any]:
         """Validate ownership and partially close position at latest authoritative market quote."""
-        pos = await asyncio.to_thread(get_position_by_id, trade_id, user_id)
+        if pos is None:
+            pos = await asyncio.to_thread(get_position_by_id, trade_id, user_id)
         if not pos:
             raise ValueError(f"Position #{trade_id} not found or unauthorized.")
 
@@ -263,14 +264,16 @@ class PositionService:
         # Update active trade state in Valkey
         valkey_service.set(f"trade:active:{trade_id}", result, ttl_seconds=60)
         valkey_service.invalidate_user_cache(user_id)
-        summary = await self.get_account_and_dashboard_summary(user_id)
-        result["summary"] = summary
+        if not skip_summary:
+            summary = await self.get_account_and_dashboard_summary(user_id)
+            result["summary"] = summary
         result["ok"] = True
         return result
 
-    async def close_position_fully(self, trade_id: int, user_id: int) -> Dict[str, Any]:
+    async def close_position_fully(self, trade_id: int, user_id: int, pos: Optional[Dict[str, Any]] = None, skip_summary: bool = False) -> Dict[str, Any]:
         """Validate ownership and fully close position at latest authoritative market quote."""
-        pos = await asyncio.to_thread(get_position_by_id, trade_id, user_id)
+        if pos is None:
+            pos = await asyncio.to_thread(get_position_by_id, trade_id, user_id)
         if not pos:
             raise ValueError(f"Position #{trade_id} not found or unauthorized.")
 
@@ -289,8 +292,9 @@ class PositionService:
         valkey_service.srem(f"user:{user_id}:active_trades", str(trade_id))
         valkey_service.srem(f"symbol:{sym}:active_trades", str(trade_id))
         valkey_service.invalidate_user_cache(user_id)
-        summary = await self.get_account_and_dashboard_summary(user_id)
-        result["summary"] = summary
+        if not skip_summary:
+            summary = await self.get_account_and_dashboard_summary(user_id)
+            result["summary"] = summary
         result["ok"] = True
         return result
 

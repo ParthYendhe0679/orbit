@@ -442,8 +442,12 @@
     }
     history.replaceState(null, "", url.pathname + url.search + url.hash);
   }
-  async function initClerkAuth() {
-    if (clerkInitPromise) return clerkInitPromise;
+  async function initClerkAuth(maxWaitMs = 1500) {
+    if (clerkInstance && isClerkActive) return clerkInstance;
+    if (clerkInitPromise) {
+      const res = await clerkInitPromise;
+      if (res && clerkInstance) return clerkInstance;
+    }
     clerkInitPromise = (async () => {
       try {
         let pubKey = "";
@@ -465,8 +469,9 @@
         if (clerkScript && !clerkScript.getAttribute("data-clerk-publishable-key")) {
           clerkScript.setAttribute("data-clerk-publishable-key", pubKey);
         }
+        const maxAttempts = Math.max(15, Math.floor(maxWaitMs / 100));
         let attempts = 0;
-        while (!window.Clerk && attempts < 15) {
+        while (!window.Clerk && attempts < maxAttempts) {
           await new Promise((r) => setTimeout(r, 100));
           attempts++;
         }
@@ -484,7 +489,7 @@
           if (clerkInstance && typeof clerkInstance.load === "function") {
             await Promise.race([
               clerkInstance.load(loadOptions),
-              new Promise((_, reject) => setTimeout(() => reject(new Error("Clerk load timed out")), 2500))
+              new Promise((_, reject) => setTimeout(() => reject(new Error("Clerk load timed out")), 3500))
             ]).catch((loadErr) => {
               console.warn("[Orbit Auth] Clerk load warning:", loadErr);
             });
@@ -496,8 +501,9 @@
           );
           const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
           const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1e3;
-          const returningFromOAuth = (oauthFresh || window.location.hash.includes("sso-callback")) && clerkHasOAuthAttempt(clerkInstance.client);
-          if (!returningFromOAuth) {
+          const isCallbackHash = window.location.hash.includes("sso-callback") || window.location.search.includes("__clerk_");
+          const returningFromOAuth = (oauthFresh || isCallbackHash) && (clerkHasOAuthAttempt(clerkInstance.client) || isCallbackHash);
+          if (!returningFromOAuth && !isCallbackHash) {
             sessionStorage.removeItem("orbit_oauth_in_progress");
             if (window.location.hash.includes("sso-")) {
               history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -762,14 +768,15 @@
       btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Connecting with Google...</span>';
       btn.style.pointerEvents = "none";
     }
+    let isRedirecting = false;
     let resetTimer = setTimeout(() => {
       if (btn) {
         btn.innerHTML = originalText;
         btn.style.pointerEvents = "auto";
       }
-    }, 4500);
+    }, 6e3);
     try {
-      await initClerkAuth();
+      await initClerkAuth(5e3);
       if (clerkInstance && clerkInstance.user && clerkInstance.session) {
         clearTimeout(resetTimer);
         const synced = await syncClerkUserAndEnter(clerkInstance.user);
@@ -789,15 +796,20 @@
           oidcPrompt: "select_account"
         };
         if (typeof clerkInstance.authenticateWithRedirect === "function") {
+          isRedirecting = true;
+          if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Redirecting to Google...</span>';
           await clerkInstance.authenticateWithRedirect(oauthParams);
           return;
         } else if (clerkInstance.client && clerkInstance.client.signIn && typeof clerkInstance.client.signIn.authenticateWithRedirect === "function") {
+          isRedirecting = true;
+          if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Redirecting to Google...</span>';
           await clerkInstance.client.signIn.authenticateWithRedirect(oauthParams);
           return;
         }
       }
-      throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded.");
+      throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded. Please ensure internet access to Clerk or use username/password login.");
     } catch (err) {
+      isRedirecting = false;
       clearTimeout(resetTimer);
       console.error("Google auth error:", err);
       sessionStorage.removeItem("orbit_oauth_in_progress");
@@ -807,10 +819,12 @@
         errorEl.classList.remove("hidden");
       }
     } finally {
-      clearTimeout(resetTimer);
-      if (btn) {
-        btn.innerHTML = originalText;
-        btn.style.pointerEvents = "auto";
+      if (!isRedirecting) {
+        clearTimeout(resetTimer);
+        if (btn) {
+          btn.innerHTML = originalText;
+          btn.style.pointerEvents = "auto";
+        }
       }
     }
   }
@@ -2536,9 +2550,14 @@
                     <td class="${pnlClass2}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pnlPct}%)</span></td>
                     <td>${openTime}</td>
                     <td>
-                        <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})">
-                            <i class="fa-solid fa-sliders"></i> Manage
-                        </button>
+                        <div style="display:inline-flex;gap:6px;align-items:center;">
+                            <button class="glow-btn btn-danger btn-sm" onclick="quickCloseTrade(${pos.id})" title="Fast 1-Click Close at Market" style="padding:4px 8px;font-size:11px;background:rgba(239,68,68,0.2);border:1px solid rgba(239,68,68,0.5);color:#fca5a5;border-radius:4px;cursor:pointer;">
+                                <i class="fa-solid fa-bolt"></i> Close
+                            </button>
+                            <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})" style="padding:4px 8px;font-size:11px;">
+                                <i class="fa-solid fa-sliders"></i> Manage
+                            </button>
+                        </div>
                     </td>
                 </tr>
             `;
@@ -2825,6 +2844,34 @@
     }
     safeText(getElement("est-margin-refund"), formatINR(Math.max(0, totalRefund)));
   }
+  async function quickCloseTrade(tradeId) {
+    const posList = store.get("openPositions") || [];
+    const targetPos = posList.find((p) => p.id === tradeId);
+    const sym = targetPos ? targetPos.symbol || targetPos.asset : `Position #${tradeId}`;
+    if (typeof window.logToTerminal === "function") {
+      window.logToTerminal("Execution Agent", `\u26A1 Fast Closing ${sym} at market price...`);
+    }
+    try {
+      const uid = store.get("currentUserId");
+      const res = await tradingService.closePositionFull(tradeId, uid);
+      const realizedPnl = Number(res.realized_pnl ?? 0);
+      if (typeof window.logToTerminal === "function") {
+        window.logToTerminal(
+          "Execution Agent",
+          `\u2705 ${sym} closed instantly! Realized P&L: ${formatINR(realizedPnl)}`
+        );
+      }
+      await Promise.all([
+        loadOpenTrades(),
+        fetchDashboardSummary(),
+        loadTradeHistoryPage(0)
+      ]);
+    } catch (err) {
+      console.error("[ManageTrades] Quick close error:", err);
+      alert(`Quick close failed: ${err.message || err}`);
+      await loadOpenTrades();
+    }
+  }
   async function executePositionClose() {
     if (_isCloseExecuting) return;
     const trade = store.get("activeManageTrade");
@@ -2842,13 +2889,18 @@
       return;
     }
     const isFullClose = closeQty >= remQty;
-    const confirmMsg = isFullClose ? `Confirm FULL CLOSE of ${trade.symbol || trade.asset} (${remQty} units)?` : `Confirm partial close of ${closeQty} units of ${trade.symbol || trade.asset}?`;
-    if (!confirm(confirmMsg)) return;
     _isCloseExecuting = true;
     const btn = getElement("btn-confirm-close");
     const btnText = getElement("btn-confirm-close-text");
     if (btn) btn.disabled = true;
     if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
+    closeManageTradeModal();
+    if (typeof window.logToTerminal === "function") {
+      window.logToTerminal(
+        "Execution Agent",
+        `\u26A1 Submitting ${isFullClose ? "full" : "partial"} close for ${trade.symbol || trade.asset}...`
+      );
+    }
     try {
       const uid = store.get("currentUserId");
       let realizedPnl = 0;
@@ -2859,7 +2911,6 @@
         const res = await tradingService.closePositionPartial(tradeId, closeQty, uid);
         realizedPnl = Number(res.realized_pnl ?? 0);
       }
-      closeManageTradeModal();
       await Promise.all([
         loadOpenTrades(),
         fetchDashboardSummary(),
@@ -2876,6 +2927,7 @@
     } catch (err) {
       console.error("[ManageTrades] Close execution error:", err);
       alert(`Close order failed: ${err.message}`);
+      await loadOpenTrades();
     } finally {
       _isCloseExecuting = false;
       if (btn) btn.disabled = false;
@@ -5395,6 +5447,7 @@
   w.onCustomCloseInput = onCustomCloseInput;
   w.setMaxCloseQty = setMaxCloseQty;
   w.executePositionClose = executePositionClose;
+  w.quickCloseTrade = quickCloseTrade;
   w.fetchDashboardSummary = fetchDashboardSummary;
   w.switchManageSubTab = switchManageSubTab;
   w.openStrategyModal = openStrategyModal;

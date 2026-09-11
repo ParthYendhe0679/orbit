@@ -75,8 +75,12 @@ export function clerkRouterNavigate(to: string): void {
 /**
  * Initializes Clerk Headless JS SDK with publishable key and OAuth callback handlers.
  */
-export async function initClerkAuth(): Promise<any> {
-    if (clerkInitPromise) return clerkInitPromise;
+export async function initClerkAuth(maxWaitMs = 1500): Promise<any> {
+    if (clerkInstance && isClerkActive) return clerkInstance;
+    if (clerkInitPromise) {
+        const res = await clerkInitPromise;
+        if (res && clerkInstance) return clerkInstance;
+    }
 
     clerkInitPromise = (async () => {
         try {
@@ -102,9 +106,10 @@ export async function initClerkAuth(): Promise<any> {
                 clerkScript.setAttribute("data-clerk-publishable-key", pubKey);
             }
 
-            // Wait for Clerk SDK to be defined in global scope (max 1.5s)
+            // Wait for Clerk SDK to be defined in global scope
+            const maxAttempts = Math.max(15, Math.floor(maxWaitMs / 100));
             let attempts = 0;
-            while (!window.Clerk && attempts < 15) {
+            while (!window.Clerk && attempts < maxAttempts) {
                 await new Promise((r) => setTimeout(r, 100));
                 attempts++;
             }
@@ -123,7 +128,7 @@ export async function initClerkAuth(): Promise<any> {
                 if (clerkInstance && typeof clerkInstance.load === "function") {
                     await Promise.race([
                         clerkInstance.load(loadOptions),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error("Clerk load timed out")), 2500))
+                        new Promise((_, reject) => setTimeout(() => reject(new Error("Clerk load timed out")), 3500))
                     ]).catch((loadErr) => {
                         console.warn("[Orbit Auth] Clerk load warning:", loadErr);
                     });
@@ -137,9 +142,10 @@ export async function initClerkAuth(): Promise<any> {
 
                 const oauthStartedAt = Number(sessionStorage.getItem("orbit_oauth_in_progress") || 0);
                 const oauthFresh = oauthStartedAt > 1 && Date.now() - oauthStartedAt < 15 * 60 * 1000;
-                const returningFromOAuth = (oauthFresh || window.location.hash.includes("sso-callback"))
-                    && clerkHasOAuthAttempt(clerkInstance.client);
-                if (!returningFromOAuth) {
+                const isCallbackHash = window.location.hash.includes("sso-callback") || window.location.search.includes("__clerk_");
+                const returningFromOAuth = (oauthFresh || isCallbackHash)
+                    && (clerkHasOAuthAttempt(clerkInstance.client) || isCallbackHash);
+                if (!returningFromOAuth && !isCallbackHash) {
                     sessionStorage.removeItem("orbit_oauth_in_progress");
                     if (window.location.hash.includes("sso-")) {
                         history.replaceState(null, "", window.location.pathname + window.location.search);
@@ -481,15 +487,16 @@ export async function handleClerkGoogleAuth(): Promise<void> {
         btn.style.pointerEvents = "none";
     }
 
+    let isRedirecting = false;
     let resetTimer = setTimeout(() => {
         if (btn) {
             btn.innerHTML = originalText;
             btn.style.pointerEvents = "auto";
         }
-    }, 4500);
+    }, 6000);
 
     try {
-        await initClerkAuth();
+        await initClerkAuth(5000);
 
         // If user already has an active Clerk session, sync to DB and launch console
         if (clerkInstance && clerkInstance.user && clerkInstance.session) {
@@ -515,6 +522,8 @@ export async function handleClerkGoogleAuth(): Promise<void> {
             };
 
             if (typeof clerkInstance.authenticateWithRedirect === "function") {
+                isRedirecting = true;
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Redirecting to Google...</span>';
                 await clerkInstance.authenticateWithRedirect(oauthParams);
                 return;
             } else if (
@@ -522,14 +531,17 @@ export async function handleClerkGoogleAuth(): Promise<void> {
                 clerkInstance.client.signIn &&
                 typeof clerkInstance.client.signIn.authenticateWithRedirect === "function"
             ) {
+                isRedirecting = true;
+                if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> <span>Redirecting to Google...</span>';
                 await clerkInstance.client.signIn.authenticateWithRedirect(oauthParams);
                 return;
             }
         }
 
         // No Clerk SDK means no verified Google identity: never create an account without one.
-        throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded.");
+        throw new Error("Google sign-in is unavailable because the Clerk SDK could not be loaded. Please ensure internet access to Clerk or use username/password login.");
     } catch (err: any) {
+        isRedirecting = false;
         clearTimeout(resetTimer);
         console.error("Google auth error:", err);
         sessionStorage.removeItem("orbit_oauth_in_progress");
@@ -539,10 +551,12 @@ export async function handleClerkGoogleAuth(): Promise<void> {
             errorEl.classList.remove("hidden");
         }
     } finally {
-        clearTimeout(resetTimer);
-        if (btn) {
-            btn.innerHTML = originalText;
-            btn.style.pointerEvents = "auto";
+        if (!isRedirecting) {
+            clearTimeout(resetTimer);
+            if (btn) {
+                btn.innerHTML = originalText;
+                btn.style.pointerEvents = "auto";
+            }
         }
     }
 }

@@ -69,6 +69,7 @@ import {
     onCustomCloseInput,
     setMaxCloseQty,
     executePositionClose,
+    quickCloseTrade,
     fetchDashboardSummary,
     renderDashboardSummary,
     switchManageSubTab
@@ -211,6 +212,7 @@ w.selectClosePct = selectClosePct;
 w.onCustomCloseInput = onCustomCloseInput;
 w.setMaxCloseQty = setMaxCloseQty;
 w.executePositionClose = executePositionClose;
+w.quickCloseTrade = quickCloseTrade;
 w.fetchDashboardSummary = fetchDashboardSummary;
 w.switchManageSubTab = switchManageSubTab;
 

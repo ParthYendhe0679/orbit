@@ -47,6 +47,17 @@ def _headers(scope) -> dict:
     return {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
 
 
+def is_loopback_host(host: Optional[str]) -> bool:
+    if not host:
+        return False
+    h = host.strip()
+    if h.startswith("[") and "]" in h:
+        h = h[1:h.index("]")]
+    elif ":" in h and not h.startswith("::") and h.count(":") == 1:
+        h = h.split(":")[0]
+    return h in LOOPBACK_HOSTS or h.startswith("127.")
+
+
 def is_trusted_gateway(headers: dict, client_host: Optional[str]) -> bool:
     """True when the request comes from the Go gateway (or another internal caller)."""
     if headers.get("origin"):
@@ -54,7 +65,7 @@ def is_trusted_gateway(headers: dict, client_host: Optional[str]) -> bool:
     token = internal_token()
     if token:
         return hmac.compare_digest(headers.get("x-orbit-internal-token", ""), token)
-    return (client_host or "") in LOOPBACK_HOSTS
+    return is_loopback_host(client_host)
 
 
 def classify(path: str) -> str:

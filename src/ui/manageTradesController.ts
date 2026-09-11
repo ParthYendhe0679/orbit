@@ -236,9 +236,14 @@ export async function loadOpenTrades(): Promise<void> {
                     <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pnlPct}%)</span></td>
                     <td>${openTime}</td>
                     <td>
-                        <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})">
-                            <i class="fa-solid fa-sliders"></i> Manage
-                        </button>
+                        <div style="display:inline-flex;gap:6px;align-items:center;">
+                            <button class="glow-btn btn-danger btn-sm" onclick="quickCloseTrade(${pos.id})" title="Fast 1-Click Close at Market" style="padding:4px 8px;font-size:11px;background:rgba(239,68,68,0.2);border:1px solid rgba(239,68,68,0.5);color:#fca5a5;border-radius:4px;cursor:pointer;">
+                                <i class="fa-solid fa-bolt"></i> Close
+                            </button>
+                            <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})" style="padding:4px 8px;font-size:11px;">
+                                <i class="fa-solid fa-sliders"></i> Manage
+                            </button>
+                        </div>
                     </td>
                 </tr>
             `;
@@ -607,6 +612,42 @@ export function recalculateCloseEstimates(closeQty: number): void {
 }
 
 /**
+ * 1-Click high-speed position closure directly from the Open Trades table.
+ */
+export async function quickCloseTrade(tradeId: number): Promise<void> {
+    const posList = store.get("openPositions") || [];
+    const targetPos = posList.find((p: Position) => p.id === tradeId);
+    const sym = targetPos ? (targetPos.symbol || targetPos.asset) : `Position #${tradeId}`;
+
+    if (typeof (window as any).logToTerminal === "function") {
+        (window as any).logToTerminal("Execution Agent", `⚡ Fast Closing ${sym} at market price...`);
+    }
+
+    try {
+        const uid = store.get("currentUserId");
+        const res = await tradingService.closePositionFull(tradeId, uid);
+        const realizedPnl = Number(res.realized_pnl ?? 0);
+
+        if (typeof (window as any).logToTerminal === "function") {
+            (window as any).logToTerminal(
+                "Execution Agent",
+                `✅ ${sym} closed instantly! Realized P&L: ${formatINR(realizedPnl)}`
+            );
+        }
+
+        await Promise.all([
+            loadOpenTrades(),
+            fetchDashboardSummary(),
+            loadTradeHistoryPage(0)
+        ]);
+    } catch (err: any) {
+        console.error("[ManageTrades] Quick close error:", err);
+        alert(`Quick close failed: ${err.message || err}`);
+        await loadOpenTrades();
+    }
+}
+
+/**
  * Submits partial or full position close to backend API.
  */
 export async function executePositionClose(): Promise<void> {
@@ -629,17 +670,22 @@ export async function executePositionClose(): Promise<void> {
     }
 
     const isFullClose = closeQty >= remQty;
-    const confirmMsg = isFullClose
-        ? `Confirm FULL CLOSE of ${trade.symbol || trade.asset} (${remQty} units)?`
-        : `Confirm partial close of ${closeQty} units of ${trade.symbol || trade.asset}?`;
-
-    if (!confirm(confirmMsg)) return;
 
     _isCloseExecuting = true;
     const btn = getElement<HTMLButtonElement>("btn-confirm-close");
     const btnText = getElement("btn-confirm-close-text");
     if (btn) btn.disabled = true;
     if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
+
+    // Close modal immediately so the user is never stuck looking at a spinning button
+    closeManageTradeModal();
+
+    if (typeof (window as any).logToTerminal === "function") {
+        (window as any).logToTerminal(
+            "Execution Agent",
+            `⚡ Submitting ${isFullClose ? "full" : "partial"} close for ${trade.symbol || trade.asset}...`
+        );
+    }
 
     try {
         const uid = store.get("currentUserId");
@@ -651,9 +697,6 @@ export async function executePositionClose(): Promise<void> {
             const res = await tradingService.closePositionPartial(tradeId, closeQty, uid);
             realizedPnl = Number(res.realized_pnl ?? 0);
         }
-
-        // Close modal
-        closeManageTradeModal();
 
         // Refresh all relevant views immediately
         await Promise.all([
@@ -672,6 +715,7 @@ export async function executePositionClose(): Promise<void> {
     } catch (err: any) {
         console.error("[ManageTrades] Close execution error:", err);
         alert(`Close order failed: ${err.message}`);
+        await loadOpenTrades();
     } finally {
         _isCloseExecuting = false;
         if (btn) btn.disabled = false;

@@ -141,7 +141,7 @@ body {
     left: 0;
     width: 100vw;
     height: 100vh;
-    z-index: 2;
+    z-index: 0;
     pointer-events: none;
     display: block;
     background: transparent;
@@ -2264,7 +2264,7 @@ button { background: none; border: none; cursor: pointer; }
     width: 100vw;
     height: 100vh;
     pointer-events: none;
-    z-index: 2;
+    z-index: 0;
 }
 
 body.in-dashboard #three-canvas {
@@ -6475,7 +6475,8 @@ body.printing-report .active-indicator-pulse {
     background-size: cover;
     background-position: center bottom;
     background-repeat: no-repeat;
-    opacity: 0.65;
+    opacity: 0.45;
+    mix-blend-mode: screen;
     pointer-events: none;
     z-index: 1;
     -webkit-mask-image: linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,0.85) 45%, rgba(0,0,0,0) 100%);
