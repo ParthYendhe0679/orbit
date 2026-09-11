@@ -8,21 +8,23 @@ BREAK_EVEN_TRIGGER_PCT = 0.015
 OUTCOME_LABELS = {"sl": "stop loss", "target": "target", "cancelled": "cancelled"}
 
 
-def monitor_positions(current_price, log_func=None, user_id=None):
+def monitor_positions(current_price, log_func=None, user_id=None, asset=None):
     active_positions = db.get_active_positions(user_id)
     closed_any = False
     
     for trade in active_positions:
         if trade["status"] != "active":
             continue
+        if asset and trade.get("asset") != asset:
+            continue
             
         trade_id = trade["id"]
-        asset = trade["asset"]
+        trade_asset = trade["asset"]
         trade_type = trade["type"]
         entry = trade["entry_price"]
         sl = trade["sl"]
         target = trade["target"]
-        qty = trade["quantity"]
+        qty = trade.get("remaining_quantity") if trade.get("remaining_quantity") is not None else trade["quantity"]
         
         # 1. Update current price and calculate unrealized P&L
         db.update_active_position_price(trade_id, current_price)
@@ -87,6 +89,6 @@ def monitor_positions(current_price, log_func=None, user_id=None):
                 
             if log_func:
                 pnl_sign = "+" if final_pnl >= 0 else ""
-                log_func("P&L Manager", f"[POSITION CLOSED] Trade on {asset} closed. Exit price: {exit_price:.2f} INR. Realized P&L: {pnl_sign}{final_pnl:.2f} INR ({OUTCOME_LABELS.get(outcome, outcome).upper()}).")
+                log_func("P&L Manager", f"[POSITION CLOSED] Trade on {trade_asset} closed. Exit price: {exit_price:.2f} INR. Realized P&L: {pnl_sign}{final_pnl:.2f} INR ({OUTCOME_LABELS.get(outcome, outcome).upper()}).")
                 
     return closed_any

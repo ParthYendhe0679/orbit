@@ -19,6 +19,13 @@ backend/backend
 # Node
 node_modules/
 
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.db
+
 # Editors / OS
 .vscode/
 .idea/
@@ -29,3 +36,4 @@ Thumbs.db
 temp_mochatrade/
 *.neon-backup
 *.backup
+scratch/

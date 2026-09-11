@@ -5,59 +5,152 @@ import json
 import os
 import random
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import yfinance as yf
 import pandas as pd
 
 import sys
-# Ensure ai-service root directory is in sys.path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure ai-service and parent directories are in sys.path
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.abspath(os.path.join(_current_dir, ".."))
+for _p in (_current_dir, _parent_dir):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    import backend
+    if hasattr(backend, "__path__") and _current_dir not in backend.__path__:
+        backend.__path__.append(_current_dir)
+except ImportError:
+    pass
 
 # Load .env before anything reads os.environ (news/LLM keys, DATABASE_URL).
 load_dotenv()
 
-import database as db
-import reporting as reporting
-from agents.chart_analyst import find_support_resistance
-from agents.indicator_analyst import analyze_indicators
-from agents.news_analyst import analyze_sentiment
-from agents.momentum_candle_analyst import analyze_momentum_candles
-from agents.ema_ribbon_analyst import analyze_ema_ribbon
-from agents.volatility_analyst import analyze_volatility
-from agents.volume_flow_analyst import analyze_volume_flow
-from agents.mtf_trend_analyst import analyze_mtf_trend
-from agents.strategy_judge import evaluate_strategies
-from agents.risk_planner import plan_trade
-from agents.execution_agent import check_and_execute_trades
-from agents.portfolio_monitor import monitor_positions
+try:
+    import backend.database as db
+    import backend.reporting as reporting
+    from backend.services.market_data_service import market_service
+    from backend.services.agent_orchestrator import agent_orchestrator
+    from backend.services.strategy_engine import strategy_engine
+    from backend.services.consensus_engine import consensus_engine
+    from backend.services.orbit_brain import orbit_brain
+    from backend.services.risk_guard import risk_guard
+    from backend.services.opportunity_engine import opportunity_engine
+    from backend.services.decision_engine import decision_engine
+    from backend.services.explainability_engine import explainability_engine
+    from backend.services.copilot_service import copilot_service
+    from backend.services.position_service import position_service
+    from backend.services.valkey_service import valkey_service
+    from backend.models.copilot import CopilotChatRequest, ConversationCreate
+    from backend.agents.chart_analyst import find_support_resistance
+    from backend.agents.indicator_analyst import analyze_indicators
+    from backend.agents.news_analyst import analyze_sentiment
+    from backend.agents.momentum_candle_analyst import analyze_momentum_candles
+    from backend.agents.ema_ribbon_analyst import analyze_ema_ribbon
+    from backend.agents.volatility_analyst import analyze_volatility
+    from backend.agents.volume_flow_analyst import analyze_volume_flow
+    from backend.agents.mtf_trend_analyst import analyze_mtf_trend
+    from backend.agents.strategy_judge import evaluate_strategies
+    from backend.agents.risk_planner import plan_trade
+    from backend.agents.execution_agent import check_and_execute_trades
+    from backend.agents.portfolio_monitor import monitor_positions
+except ImportError:
+    import database as db
+    import reporting as reporting
+    from services.market_data_service import market_service
+    from services.agent_orchestrator import agent_orchestrator
+    from services.strategy_engine import strategy_engine
+    from services.consensus_engine import consensus_engine
+    from services.orbit_brain import orbit_brain
+    from services.risk_guard import risk_guard
+    from services.opportunity_engine import opportunity_engine
+    from services.decision_engine import decision_engine
+    from services.explainability_engine import explainability_engine
+    from services.copilot_service import copilot_service
+    from services.position_service import position_service
+    from services.valkey_service import valkey_service
+    from models.copilot import CopilotChatRequest, ConversationCreate
+    from agents.chart_analyst import find_support_resistance
+    from agents.indicator_analyst import analyze_indicators
+    from agents.news_analyst import analyze_sentiment
+    from agents.momentum_candle_analyst import analyze_momentum_candles
+    from agents.ema_ribbon_analyst import analyze_ema_ribbon
+    from agents.volatility_analyst import analyze_volatility
+    from agents.volume_flow_analyst import analyze_volume_flow
+    from agents.mtf_trend_analyst import analyze_mtf_trend
+    from agents.strategy_judge import evaluate_strategies
+    from agents.risk_planner import plan_trade
+    from agents.execution_agent import check_and_execute_trades
+    from agents.portfolio_monitor import monitor_positions
 
 # Seconds between price ticks in the live simulation loop.
 TICK_INTERVAL_SECONDS = 4
 # Seconds between full autotrade market scans.
 AUTOTRADE_SCAN_SECONDS = 180
 
+# ---------------------------------------------------------------------------
+# Phase 11 — orbit-stream Go hub integration
+# ---------------------------------------------------------------------------
+# URL of the Go WebSocket broadcast hub.  Python publishes high-frequency tick
+# and metrics payloads here; the hub fans them out to all browser clients with
+# goroutine-level concurrency.  If the hub is not running the helper silently
+# drops the frame — the Python path continues to work as before.
+STREAM_HUB_URL = os.getenv("STREAM_HUB_URL", "http://127.0.0.1:8001/publish")
+
+def publish_tick(payload: dict) -> bool:
+    """Fire-and-forget: POST a JSON payload to the orbit-stream Go hub.
+
+    Runs synchronously (called from asyncio.to_thread).  A 50 ms timeout
+    ensures a stalled hub never blocks the pipeline tick loop.
+    Returns True if accepted by the Go hub, False otherwise.
+    """
+    try:
+        import urllib.request, json as _json
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            STREAM_HUB_URL,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=0.05) as resp:
+            return resp.status in (200, 204)
+    except Exception:
+        return False  # hub not running or slow — tick drop is acceptable
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: prepare the schema, then run the autotrade scanner for as long
-    # as the app lives. The old @app.on_event("startup") hook is deprecated and
-    # left the scanner task dangling on shutdown.
+    # Startup: prepare the schema, initialize Valkey, log validation
     db.init_db()
+    valkey_connected = valkey_service.connect()
+    print("DATABASE: CONNECTED", flush=True)
+    print("VALKEY: " + ("CONNECTED" if valkey_connected else "DEGRADED_FALLBACK"), flush=True)
+    print("TLS: ENABLED", flush=True)
+    print("MARKET SERVICE: READY", flush=True)
+    print("WEBSOCKET: READY", flush=True)
+
     scanner = asyncio.create_task(autotrade_scanner_loop())
+    market_scheduler = asyncio.create_task(market_tick_scheduler_loop())
     try:
         yield
     finally:
         scanner.cancel()
+        market_scheduler.cancel()
         try:
-            await scanner
-        except asyncio.CancelledError:
+            await asyncio.gather(scanner, market_scheduler, return_exceptions=True)
+        except Exception:
             pass
+        valkey_service.close()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -85,8 +178,35 @@ async def serve_root():
 
 
 @app.get("/health")
-def health_check():
-    return {"status": "ok", "service": "ai-service", "version": "1.0.0"}
+@app.get("/api/health")
+async def health_check():
+    valkey_health = await asyncio.to_thread(valkey_service.health_check)
+    valkey_connected = valkey_health.get("valkey") == "connected"
+    db_connected = False
+    try:
+        def _check_db():
+            c = db.get_connection()
+            c.close()
+            return True
+        db_connected = await asyncio.to_thread(_check_db)
+    except Exception:
+        db_connected = False
+
+    is_healthy = db_connected and valkey_connected
+    return {
+        "status": "healthy" if is_healthy else "degraded",
+        "backend": "connected",
+        "database": "connected" if db_connected else "disconnected",
+        "valkey": "connected" if valkey_connected else "disconnected",
+        "cache_mode": "aiven_valkey" if valkey_connected else "memory_fallback",
+        "tls": valkey_health.get("tls", True),
+        # Diagnostic metadata
+        "service": "ai-service",
+        "version": "1.0.0",
+        "valkey_mode": "aiven_cloud" if valkey_connected else "in_memory",
+        "tls_enabled": valkey_health.get("tls", True),
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 @app.get("/api/news")
@@ -112,6 +232,423 @@ def get_market_news(symbol: str = "BTC-USD"):
         "count": len(headlines),
         "symbol": symbol,
     }
+
+
+# ---------------------------------------------------------------------------
+# Centralized Market Data REST Endpoints (Phase 2)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/market/quote")
+async def api_get_market_quote(symbol: str = "BTC-USD", refresh: bool = False):
+    """Retrieve real-time quote for a symbol via the centralized MarketDataService."""
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        quote = await market_service.get_quote(clean_symbol, force_refresh=refresh)
+        dumped = quote.model_dump()
+        return {"ok": True, "data": dumped, **dumped}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/market/history")
+async def api_get_market_history(
+    symbol: str = "BTC-USD",
+    period: str = "60d",
+    interval: str = "1d",
+    refresh: bool = False
+):
+    """Retrieve standardized historical OHLCV snapshot with validation."""
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        snapshot = await market_service.get_historical_snapshot(
+            clean_symbol, period=period, interval=interval, force_refresh=refresh
+        )
+        return {"ok": True, "data": snapshot.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/market/search")
+async def api_search_market_symbols(q: str = "", market: Optional[str] = None):
+    """Search and autocomplete financial symbols across Crypto, Equities, Forex, Indices."""
+    results = await market_service.search_symbols(q, market=market)
+    dumped = [r.model_dump() for r in results]
+    return {"ok": True, "results": dumped, "data": {"results": dumped}}
+
+
+@app.get("/api/market/stats")
+def api_get_market_stats():
+    """Retrieve cache telemetry and health stats from the MarketDataService."""
+    return {"ok": True, "stats": market_service.get_cache_stats()}
+
+
+@app.get("/api/market/{symbol}")
+async def api_get_market_symbol(symbol: str, refresh: bool = False):
+    """Path-based market quote alias conforming to GET /api/market/:symbol."""
+    return await api_get_market_quote(symbol=symbol, refresh=refresh)
+
+
+# ---------------------------------------------------------------------------
+# ORBIT AI Agent Intelligence REST Endpoints (Phase 3)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/agents/list")
+def api_list_agents():
+    """List all registered ORBIT specialized intelligence agents and metadata."""
+    agents = agent_orchestrator.list_agents()
+    return {"ok": True, "count": len(agents), "agents": agents}
+
+
+@app.get("/api/agents/analyze")
+async def api_analyze_symbol(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d",
+    agents: Optional[str] = None
+):
+    """
+    Execute specialized intelligence agents against standardized market data.
+    Query param 'agents' can be a comma-separated list of agent IDs (e.g. 'trend_agent,momentum_agent').
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        agent_id_list = [a.strip() for a in agents.split(",") if a.strip()] if agents else None
+        result = await agent_orchestrator.analyze_symbol(
+            symbol=clean_symbol,
+            timeframe=timeframe,
+            selected_agents=agent_id_list
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Trading Strategy Engine REST Endpoints (Phase 4)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/strategies/list")
+def api_list_strategies():
+    """List all registered ORBIT quantitative trading strategies, formulas, and metadata."""
+    strategies = strategy_engine.list_strategies()
+    return {"ok": True, "count": len(strategies), "strategies": strategies}
+
+
+@app.get("/api/strategies/evaluate")
+async def api_evaluate_strategies(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d",
+    strategies: Optional[str] = None
+):
+    """
+    Evaluate quantitative trading strategies against standardized market data.
+    Query param 'strategies' can be a comma-separated list of strategy IDs (e.g. 'smc,trend_following,supertrend').
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        strat_id_list = [s.strip() for s in strategies.split(",") if s.strip()] if strategies else None
+        result = await strategy_engine.evaluate_symbol(
+            symbol=clean_symbol,
+            timeframe=timeframe,
+            selected_strategies=strat_id_list
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Consensus Engine REST Endpoints (Phase 5)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/consensus/evaluate")
+async def api_evaluate_consensus(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Evaluate unified ORBIT market consensus blending Phase 3 AI Agent Intelligence
+    and Phase 4 Trading Strategy setup evidence into a normalized market view.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await consensus_engine.evaluate_consensus(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Brain Central Intelligence Orchestrator REST Endpoints (Phase 6)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/brain/analyze")
+async def api_brain_analyze(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Synthesize complete ORBIT market intelligence context across Phase 2 Market Data,
+    Phase 3 AI Agents, Phase 4 Trading Strategies, and Phase 5 Consensus Engine.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await orbit_brain.synthesize_analysis(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Risk Guard REST Endpoints (Phase 7)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/risk/evaluate")
+async def api_risk_evaluate(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Evaluate analysis risk and safety profile using Phase 7 ORBIT Risk Guard.
+    Synthesizes volatility, signal conflict, consensus uncertainty, analysis
+    completeness, and data sufficiency without trade execution.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await risk_guard.evaluate_risk(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Opportunity Evaluation Engine REST Endpoints (Phase 8)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/opportunity/evaluate")
+async def api_opportunity_evaluate(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Evaluate market opportunity quality using Phase 8 ORBIT Opportunity Evaluation Engine.
+    Synthesizes consensus conviction, active strategy setups, multi-agent harmony,
+    Risk Guard safety headroom, and pipeline completeness without trade execution.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await opportunity_engine.evaluate_opportunity(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Decision Engine REST Endpoints (Phase 9)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/decision/evaluate")
+async def api_decision_evaluate(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Evaluate deterministic, risk-aware market stance using Phase 9 ORBIT Decision Engine.
+    Synthesizes ORBIT Brain context, Risk Guard evaluation, and Opportunity Engine confluence
+    into an authoritative market stance (BULLISH, BEARISH, NEUTRAL, MIXED, NO_CLEAR_DECISION).
+    Strict Operational Boundary: Market stance only; does NOT execute trades or place orders.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await decision_engine.evaluate_decision(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT Explainability & Insight Engine REST Endpoints (Phase 10)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/explain/evaluate")
+@app.get("/api/insights/evaluate")
+async def api_explain_evaluate(
+    symbol: str = "BTC-USD",
+    timeframe: str = "1d"
+):
+    """
+    Synthesize structured, traceable, human-understandable market insights using Phase 10 Explainability Engine.
+    Explains the WHAT, WHY, SUPPORT, CONFLICTS, RISKS, and UNCERTAINTIES across the entire ORBIT stack.
+    Strict Operational Boundary: Pure explanation layer; does NOT execute trades or recompute technicals.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        result = await explainability_engine.evaluate_explanation(
+            symbol=clean_symbol,
+            timeframe=timeframe
+        )
+        return {"ok": True, "data": result.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# ORBIT AI Market Intelligence Copilot REST Endpoints (Phase 12)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/copilot/chat")
+@app.post("/api/chat/message")
+async def api_copilot_chat(req: CopilotChatRequest):
+    """
+    Interactive question-answering and contextual reasoning over active ORBIT analysis.
+    Grounds answers strictly in Phase 2-10 intelligence context with zero hallucination.
+    """
+    clean_msg = req.message.strip() if req.message else ""
+    if not clean_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    try:
+        response = await copilot_service.chat(req)
+        return {"ok": True, "data": response.model_dump()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Copilot inference error: {str(exc)}")
+
+
+@app.get("/api/chat/conversations")
+async def api_list_conversations(user_id: Optional[int] = None, limit: int = 50):
+    """List stored chat conversations for the history sidebar."""
+    try:
+        conversations = db.list_conversations(user_id=user_id, limit=limit)
+        return {"ok": True, "data": conversations}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list conversations: {str(exc)}")
+
+
+@app.post("/api/chat/conversations")
+async def api_create_conversation(payload: Optional[ConversationCreate] = None):
+    """Create a new conversation session."""
+    try:
+        cid = str(uuid.uuid4())
+        title = payload.title if payload and payload.title else "New Analysis"
+        asset = payload.selected_asset if payload and payload.selected_asset else ""
+        market = payload.selected_market if payload and payload.selected_market else "US Stocks"
+        user_id = payload.user_id if payload else None
+
+        conv = db.create_conversation(
+            conversation_id=cid,
+            title=title,
+            selected_asset=asset,
+            selected_market=market,
+            user_id=user_id,
+        )
+        return {"ok": True, "data": conv}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create conversation: {str(exc)}")
+
+
+@app.get("/api/chat/conversations/{conversation_id}")
+async def api_get_conversation(conversation_id: str):
+    """Get full conversation details and historical message records."""
+    clean_cid = conversation_id.strip()
+    try:
+        conv = db.get_conversation(clean_cid)
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        messages = db.get_chat_messages(clean_cid, limit=60)
+        return {"ok": True, "data": {"conversation": conv, "messages": messages}}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load conversation: {str(exc)}")
+
+
+@app.delete("/api/chat/conversations/{conversation_id}")
+async def api_delete_conversation(conversation_id: str):
+    """Delete a conversation thread and its messages."""
+    clean_cid = conversation_id.strip()
+    try:
+        deleted = db.delete_conversation(clean_cid)
+        copilot_service.reset_session(clean_cid)
+        return {"ok": True, "deleted": deleted}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(exc)}")
+
+
+@app.get("/api/copilot/context")
+async def api_copilot_context(symbol: str = "BTC-USD", timeframe: str = "1d"):
+    """
+    Retrieve current ORBIT context snapshot and suggested follow-ups for the active symbol.
+    """
+    clean_symbol = symbol.strip() if symbol else ""
+    if not clean_symbol:
+        raise HTTPException(status_code=400, detail="Asset symbol parameter cannot be empty.")
+    try:
+        analysis = await copilot_service.get_or_resolve_analysis(clean_symbol, timeframe=timeframe)
+        if not analysis:
+            return {"ok": False, "detail": f"Could not acquire analysis for {clean_symbol}"}
+
+        summary = {
+            "symbol": analysis.symbol,
+            "timeframe": analysis.timeframe,
+            "market_stance": analysis.market_stance.value,
+            "confidence": analysis.decision_confidence,
+            "clarity": analysis.decision_clarity,
+            "risk_level": analysis.input_summary.risk_level,
+            "risk_score": analysis.input_summary.risk_score,
+            "opportunity_score": analysis.input_summary.opportunity_score,
+            "opportunity_level": analysis.input_summary.opportunity_level,
+            "headline": analysis.headline,
+            "why": analysis.why,
+            "suggested_questions": copilot_service.generate_suggested_followups(analysis, None),
+        }
+        return {"ok": True, "data": summary}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/copilot/reset")
+async def api_copilot_reset(conversation_id: str):
+    """Reset a conversation session and clear conversational history."""
+    clean_cid = conversation_id.strip() if conversation_id else ""
+    if not clean_cid:
+        raise HTTPException(status_code=400, detail="conversation_id cannot be empty.")
+    cleared = copilot_service.reset_session(clean_cid)
+    return {"ok": True, "cleared": cleared}
+
+
 
 
 # In-memory cache for /api/news/global to guarantee instantaneous (<1ms) dashboard loads
@@ -424,7 +961,7 @@ def api_get_bot_config(user_id: int):
     return {"ok": True, "config": config}
 
 @app.get("/api/report")
-def api_get_report(user_id: int):
+def api_get_report(user_id: int = 1):
     """Full performance report for one user: summary stats, curve, breakdowns."""
     trades = db.get_all_trades(user_id)
     # The equity curve is plotted against the opening balance, which is the
@@ -434,7 +971,7 @@ def api_get_report(user_id: int):
         float(t.get("pnl") or 0) for t in trades if t.get("status") == "closed"
     )
     report = reporting.build_report(trades, starting_balance=current_balance - realised)
-    return {"ok": True, "report": report}
+    return {"ok": True, "report": report, "data": report, **report}
 
 
 @app.get("/api/report/export.csv")
@@ -465,6 +1002,260 @@ def api_export_report_csv(user_id: int):
 def api_update_bot_config(req: BotConfigRequest):
     db.update_bot_config(req.user_id, req.dict())
     return {"ok": True, "message": "Bot configuration updated"}
+
+
+# ---------------------------------------------------------------------------
+# Authoritative Dashboard & Trade Management REST Endpoints
+# ---------------------------------------------------------------------------
+
+class ClosePositionRequest(BaseModel):
+    user_id: int = 1
+    quantity: Optional[float] = None
+    percentage: Optional[float] = None
+    full_close: Optional[bool] = False
+    reason: Optional[str] = None
+
+@app.get("/api/dashboard")
+@app.get("/api/dashboard/summary")
+@app.get("/api/portfolio/summary")
+async def api_dashboard_summary(user_id: int = 1):
+    """Authoritative financial dashboard summary (Equity, Cash, Margin, P&L, Win Rate)."""
+    try:
+        data = await position_service.get_account_and_dashboard_summary(user_id)
+        flat = dict(data) if isinstance(data, dict) else {}
+        return {"ok": True, "data": data, **flat, "timestamp": datetime.now().isoformat(), "source": "database"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/trades/open")
+@app.get("/api/positions")
+async def api_get_open_trades(user_id: int = 1):
+    """Retrieve all open positions with live market valuation and P&L."""
+    try:
+        trades = await position_service.get_live_open_positions(user_id)
+        return {
+            "ok": True,
+            "trades": trades,
+            "positions": trades,
+            "count": len(trades),
+            "timestamp": datetime.now().isoformat(),
+            "source": "database"
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/trades/history")
+async def api_get_trades_history(
+    user_id: int = 1,
+    symbol: Optional[str] = None,
+    market: Optional[str] = None,
+    side: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0
+):
+    """Paginated completed trade history with filters."""
+    try:
+        res = await position_service.get_trade_history_paginated(
+            user_id=user_id,
+            symbol=symbol,
+            market=market,
+            side=side,
+            outcome=outcome,
+            limit=limit,
+            offset=offset
+        )
+        return {
+            "ok": True,
+            "data": res,
+            "trades": res.get("trades", []),
+            "total": res.get("total", 0),
+            "total_count": res.get("total_count", 0),
+            "limit": res.get("limit", limit),
+            "offset": res.get("offset", offset)
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/trades/pending")
+@app.get("/api/orders/pending")
+async def api_get_pending_trades(user_id: int = 1):
+    """Retrieve all pending unfilled orders."""
+    try:
+        orders = await position_service.get_pending_orders_list(user_id)
+        return {"ok": True, "orders": orders, "count": len(orders)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/api/trades/{trade_id}")
+async def api_get_trade_by_id(trade_id: int, user_id: int = 1):
+    """Retrieve trade by id with ownership validation."""
+    pos = db.get_position_by_id(trade_id, user_id)
+    if not pos:
+        raise HTTPException(status_code=404, detail="Trade not found or unauthorized.")
+    return {"ok": True, "trade": pos}
+
+class OpenTradeRequest(BaseModel):
+    user_id: int = 1
+    symbol: str
+    side: str = "BUY"
+    quantity: float
+    leverage: Optional[float] = 1.0
+    sl: Optional[float] = None
+    target: Optional[float] = None
+    market: Optional[str] = None
+    notes: Optional[str] = None
+
+@app.post("/api/trade/open")
+@app.post("/api/trades/open")
+async def api_open_trade(req: OpenTradeRequest):
+    """Authoritative trade opening endpoint fulfilling Part 12 database & Valkey sync."""
+    user_id = req.user_id
+    symbol = req.symbol.strip().upper()
+    side = req.side.strip().upper()
+    if side not in ("BUY", "SELL", "LONG", "SHORT"):
+        raise HTTPException(status_code=400, detail="Invalid trade side")
+    side = "BUY" if side in ("BUY", "LONG") else "SELL"
+    if req.quantity <= 0:
+        raise HTTPException(status_code=400, detail="Trade quantity must be greater than zero")
+    leverage = max(1.0, float(req.leverage or 1.0))
+
+    # 1. Obtain real-time market price
+    try:
+        price = await market_service.get_price(symbol)
+        if price <= 0:
+            price = 100.0
+    except Exception:
+        price = 100.0
+
+    margin = (req.quantity * price) / leverage
+
+    # 2. Permanent database transaction (atomic balance validation, margin reservation, trade insert, audit execution)
+    trade_id, res_balance = await asyncio.to_thread(
+        db.open_active_trade_atomic,
+        user_id,
+        symbol,
+        side,
+        req.quantity,
+        price,
+        leverage,
+        req.sl or 0.0,
+        req.target or 0.0,
+        req.market or ("Crypto" if "-" in symbol else "Stock")
+    )
+    if not trade_id:
+        raise HTTPException(status_code=400, detail=str(res_balance))
+
+    # 3. Store active state in Valkey
+    trade_dict = {
+        "id": trade_id,
+        "trade_id": trade_id,
+        "user_id": user_id,
+        "symbol": symbol,
+        "side": side,
+        "entry_price": price,
+        "current_price": price,
+        "quantity": req.quantity,
+        "remaining_quantity": req.quantity,
+        "leverage": leverage,
+        "margin_used": margin,
+        "position_size": req.quantity * price,
+        "unrealized_pnl": 0.0,
+        "unrealized_pnl_percent": 0.0,
+        "status": "active",
+        "opened_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat()
+    }
+    valkey_service.set(f"trade:active:{trade_id}", trade_dict, ttl_seconds=300)
+    valkey_service.sadd(f"user:{user_id}:active_trades", str(trade_id))
+    valkey_service.sadd(f"symbol:{symbol}:active_trades", str(trade_id))
+    valkey_service.delete(f"dashboard:{user_id}:metrics")
+
+    # 4. Broadcast real-time WebSocket events
+    await manager.send_to_user(user_id, {"type": "trade_opened", "data": trade_dict})
+    live_open = await position_service.get_live_open_positions(user_id)
+    await manager.send_to_user(user_id, {"type": "positions_updated", "data": {"trades": live_open}})
+    await manager.send_to_user(user_id, {"type": "wallet", "balance": res_balance})
+
+    return {
+        "ok": True,
+        "status": "success",
+        "trade": trade_dict,
+        "data": trade_dict,
+        "trade_id": trade_id,
+        "id": trade_id,
+        "message": f"Successfully opened {side} position for {req.quantity} {symbol}"
+    }
+
+class PartialCloseRequest(BaseModel):
+    user_id: int = 1
+    quantity: Optional[float] = None
+    percentage: Optional[float] = None
+    reason: Optional[str] = None
+
+@app.post("/api/trades/{trade_id}/partial-close")
+async def api_partial_close_position(trade_id: int, req: PartialCloseRequest):
+    """Dedicated endpoint for partial position close supporting quantity or percentage."""
+    close_req = ClosePositionRequest(user_id=req.user_id, quantity=req.quantity, percentage=req.percentage, full_close=False)
+    return await api_close_position(trade_id, close_req)
+
+@app.post("/api/trades/{trade_id}/close")
+async def api_close_position(trade_id: int, req: ClosePositionRequest):
+    """
+    Close an active position partially or fully.
+    Emits real-time wallet and position updates across WebSocket to connected clients.
+    """
+    try:
+        pos = await asyncio.to_thread(db.get_position_by_id, trade_id, req.user_id)
+        if not pos:
+            raise HTTPException(status_code=404, detail="Position not found or unauthorized.")
+        if pos["status"] != "active" and pos["status"] != "pending":
+            raise HTTPException(status_code=400, detail=f"Position is {pos['status']}, cannot close.")
+
+        rem_qty = float(pos.get("remaining_quantity") if pos.get("remaining_quantity") is not None else pos.get("quantity", 0.0))
+
+        close_qty = req.quantity
+        if close_qty is None and req.percentage is not None:
+            pct = max(1.0, min(100.0, float(req.percentage)))
+            close_qty = round(rem_qty * (pct / 100.0), 6)
+
+        if req.full_close or close_qty is None or float(close_qty) >= rem_qty:
+            result = await position_service.close_position_fully(trade_id, req.user_id)
+        else:
+            if float(close_qty) <= 0:
+                raise HTTPException(status_code=400, detail="Close quantity must be positive.")
+            result = await position_service.close_position_partially(trade_id, req.user_id, float(close_qty))
+
+        summary = result.get("summary") or await position_service.get_account_and_dashboard_summary(req.user_id)
+        wallet_balance = summary.get("account", {}).get("total_capital", 0.0)
+
+        # Broadcast state synchronization to user's connected WebSocket clients
+        await manager.send_to_user(req.user_id, {"type": "wallet", "balance": wallet_balance})
+        live_open = summary.get("open_positions") if "open_positions" in summary else await position_service.get_live_open_positions(req.user_id)
+        await manager.send_to_user(req.user_id, {"type": "positions_updated", "data": {"trades": live_open}})
+        await manager.send_to_user(req.user_id, {"type": "dashboard_summary", "data": summary})
+
+        # Also emit standard events per Part 21:
+        if req.full_close or result.get("status") == "closed":
+            await manager.send_to_user(req.user_id, {"type": "trade_closed", "data": result})
+        else:
+            await manager.send_to_user(req.user_id, {"type": "trade_updated", "data": result})
+            await manager.send_to_user(req.user_id, {"type": "position_updated", "data": result})
+
+        return {"ok": True, "success": True, "result": result, **result}
+    except HTTPException:
+        raise
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+@app.post("/api/trades/{trade_id}/close/full")
+async def api_full_close_position(trade_id: int, user_id: int = 1):
+    """Convenience endpoint for full close."""
+    req = ClosePositionRequest(user_id=user_id, full_close=True)
+    return await api_close_position(trade_id, req)
+
 
 # WebSocket Manager to handle connected clients
 class ConnectionManager:
@@ -597,41 +1388,36 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
     try:
         log_agent("SYSTEM", f"Starting agent pipeline for {asset}...")
 
-        # 1. Fetch historical data using yfinance
-        # We download daily candles for the last 60 days.
-        # yfinance blocks on network I/O, so it runs off the event loop —
-        # otherwise every other connected client freezes during the download.
-        log_agent("SYSTEM", f"Downloading market data for {asset}...")
-        df = await asyncio.to_thread(yf.download, asset, period="60d", interval="1d", progress=False)
-
-        if df is None or df.empty:
-            log_agent("SYSTEM", f"ERROR: Could not find asset '{asset}' on Yahoo Finance. Please check the symbol.")
+        # 1. Fetch historical data via centralized MarketDataService
+        log_agent("SYSTEM", f"Retrieving validated market data for {asset} via MarketDataService...")
+        try:
+            snapshot = await market_service.get_historical_snapshot(asset, period="60d", interval="1d")
+            df = await market_service.get_normalized_dataframe(asset, period="60d", interval="1d")
+        except Exception as exc:
+            log_agent("SYSTEM", f"ERROR: Could not load market data for '{asset}': {exc}")
             await manager.send_json({"type": "system_status", "status": "standby"}, websocket)
             return
 
-        # Flatten multi-index columns if yfinance returns them (happens on some versions)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [col[0] for col in df.columns]
-
-        log_agent("SYSTEM", f"Successfully loaded {len(df)} days of historical data.")
+        log_agent("SYSTEM", f"Successfully loaded {snapshot.count} days of verified historical data (Age: {snapshot.data_age_seconds:.1f}s).")
         
-        # Convert df to format suitable for TradingView Lightweight Charts
-        # [{time: 'YYYY-MM-DD', open: X, high: Y, low: Z, close: W}]
-        candles = []
-        for index, row in df.iterrows():
-            candles.append({
-                "time": index.strftime("%Y-%m-%d"),
-                "open": float(row["Open"]),
-                "high": float(row["High"]),
-                "low": float(row["Low"]),
-                "close": float(row["Close"]),
-                "volume": float(row["Volume"]) if "Volume" in row else 0
-            })
+        # Convert snapshot candles to lightweight-charts format
+        # [{time: 'YYYY-MM-DD', open: X, high: Y, low: Z, close: W, volume: V}]
+        candles = [
+            {
+                "time": c.time,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+            }
+            for c in snapshot.candles
+        ]
             
         # Send historical data to client
-        latest_close = float(df["Close"].iloc[-1])
-        prev_close = float(df["Close"].iloc[-2]) if len(df) > 1 else latest_close
-        change_pct = ((latest_close - prev_close) / prev_close) * 100
+        latest_close = snapshot.quote.price
+        prev_close = snapshot.quote.previous_close
+        change_pct = snapshot.quote.change_percent
         
         await manager.send_json({
             "type": "history",
@@ -800,11 +1586,13 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
         await asyncio.sleep(0.8)
         open_positions = [p for p in active_positions if p["status"] == "active"]
         if open_positions:
-            closed = await asyncio.to_thread(monitor_positions, latest_close, log_agent, user_id)
+            closed = await asyncio.to_thread(monitor_positions, latest_close, log_agent, user_id, asset)
             if closed:
                 await manager.send_json({"type": "wallet", "balance": db.get_user_balance(user_id)}, websocket)
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
                 await manager.send_json({"type": "history_trades", "trades": db.get_trade_history(user_id)}, websocket)
+                summary = await position_service.get_account_and_dashboard_summary(user_id)
+                await manager.send_json({"type": "dashboard_summary", "data": summary}, websocket)
             else:
                 log_agent("P&L Manager", "Active positions monitoring completed. Risk thresholds are clear.")
         else:
@@ -835,11 +1623,44 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
             
             # Recalculate daily percentage change
             current_change_pct = ((sim_price - prev_close) / prev_close) * 100
-            await manager.send_json({
+            tick_payload = {
                 "type": "tick",
                 "candle": tick_candle,
-                "changePercent": current_change_pct
-            }, websocket)
+                "changePercent": current_change_pct,
+            }
+
+            # Phase 6 & Phase 9: Live Market Cache & Symbol-Indexed P&L Updates in Valkey
+            valkey_service.set(f"market:price:{asset}", {
+                "symbol": asset,
+                "price": round(sim_price, 4),
+                "previous_close": prev_close,
+                "change": round(sim_price - prev_close, 4),
+                "change_percent": round(current_change_pct, 4),
+                "updated_at": datetime.now().isoformat()
+            }, ttl_seconds=15)
+
+            # Update live P&L for any active positions on this symbol
+            active_trade_ids = valkey_service.smembers(f"symbol:{asset}:active_trades")
+            if active_trade_ids:
+                for tid_s in active_trade_ids:
+                    pos_data = valkey_service.get(f"trade:active:{tid_s}")
+                    if pos_data and isinstance(pos_data, dict) and pos_data.get("status") == "active":
+                        entry = float(pos_data.get("entry_price", sim_price))
+                        qty = float(pos_data.get("remaining_quantity") or pos_data.get("quantity", 0.0))
+                        lev = float(pos_data.get("leverage") or 1.0)
+                        side = str(pos_data.get("side", "BUY")).upper()
+                        pnl = (sim_price - entry) * qty * lev if side == "BUY" else (entry - sim_price) * qty * lev
+                        margin = float(pos_data.get("margin_used") or 1.0)
+                        pos_data["current_price"] = round(sim_price, 4)
+                        pos_data["unrealized_pnl"] = round(pnl, 2)
+                        pos_data["unrealized_pnl_pct"] = round((pnl / margin * 100.0) if margin > 0 else 0.0, 2)
+                        valkey_service.set(f"trade:active:{tid_s}", pos_data, ttl_seconds=60)
+
+            # Publish to Go hub for high-concurrency broadcast (Phase 11).
+            # Also send via Python socket so single-user setups work without Go.
+            await asyncio.to_thread(publish_tick, tick_payload)
+            await manager.send_json(tick_payload, websocket)
+
             
             # 2. Run indicator analyst (Agent 2)
             # Fold the tick into the CURRENT candle rather than appending a new
@@ -961,11 +1782,13 @@ async def run_agent_pipeline(websocket: WebSocket, asset: str, user_id: int):
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
 
             # 7. Run Portfolio Monitor (Agent 7) — owns SL/target exits
-            closed = await asyncio.to_thread(monitor_positions, sim_price, log_agent, user_id)
+            closed = await asyncio.to_thread(monitor_positions, sim_price, log_agent, user_id, asset)
             if closed:
                 await manager.send_json({"type": "wallet", "balance": db.get_user_balance(user_id)}, websocket)
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
                 await manager.send_json({"type": "history_trades", "trades": db.get_trade_history(user_id)}, websocket)
+                summary = await position_service.get_account_and_dashboard_summary(user_id)
+                await manager.send_json({"type": "dashboard_summary", "data": summary}, websocket)
                 
             # Pause before the next tick
             await asyncio.sleep(TICK_INTERVAL_SECONDS)
@@ -1023,11 +1846,16 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
     await manager.send_json({"type": "wallet", "balance": balance}, websocket)
     await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
     await manager.send_json({"type": "history_trades", "trades": db.get_trade_history(user_id)}, websocket)
+    initial_summary = await position_service.get_account_and_dashboard_summary(user_id)
+    await manager.send_json({"type": "dashboard_summary", "data": initial_summary}, websocket)
     
     try:
         while True:
             # Receive messages from frontend
-            data = await websocket.receive_text()
+            try:
+                data = await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                break
             message = json.loads(data)
             
             action = message.get("action")
@@ -1070,6 +1898,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
                         break
                 await manager.send_json({"type": "wallet", "balance": db.get_user_balance(user_id)}, websocket)
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
+                updated_summary = await position_service.get_account_and_dashboard_summary(user_id)
+                await manager.send_json({"type": "dashboard_summary", "data": updated_summary}, websocket)
 
             elif action == "cancel_trade":
                 # Trader rejected — cancel all pending trades for this user
@@ -1078,6 +1908,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str | None = None, u
                     if p["status"] == "pending":
                         db.close_trade(p["id"], p["entry_price"], "cancelled")
                 await manager.send_json({"type": "positions", "positions": db.get_active_positions(user_id)}, websocket)
+                updated_summary = await position_service.get_account_and_dashboard_summary(user_id)
+                await manager.send_json({"type": "dashboard_summary", "data": updated_summary}, websocket)
                 log_msg = {"type": "log", "agent": "Risk Planner",
                            "message": "Trade cancelled by trader.",
                            "time": datetime.now().strftime("%H:%M:%S")}
@@ -1123,20 +1955,15 @@ async def autotrade_scanner_loop():
                 assets = [a.strip() for a in config["assets"].split(",")]
                 for asset in assets:
                     if not asset: continue
-                    # 1. Fetch live data (off the event loop - yfinance blocks)
+                    # 1. Fetch live data via centralized MarketDataService
                     try:
-                        hist = await asyncio.to_thread(
-                            lambda: yf.Ticker(asset).history(period="60d", interval="1d")
-                        )
-                        if hist is None or hist.empty:
-                            continue
-                        if isinstance(hist.columns, pd.MultiIndex):
-                            hist.columns = hist.columns.get_level_values(0)
-                        current_price = float(hist["Close"].iloc[-1])
+                        snapshot = await market_service.get_historical_snapshot(asset, period="60d", interval="1d")
+                        hist = await market_service.get_normalized_dataframe(asset, period="60d", interval="1d")
+                        current_price = snapshot.quote.price
                     except Exception:
                         continue
 
-                    if current_price <= 0:
+                    if current_price <= 0 or hist.empty:
                         continue
 
                     # 2. Run Agents headless (also off the event loop - these
@@ -1201,6 +2028,8 @@ async def autotrade_scanner_loop():
                         })
                         await manager.send_to_user(user_id, {"type": "positions", "positions": db.get_active_positions(user_id)})
                         await manager.send_to_user(user_id, {"type": "wallet", "balance": db.get_user_balance(user_id)})
+                        summary = await position_service.get_account_and_dashboard_summary(user_id)
+                        await manager.send_to_user(user_id, {"type": "dashboard_summary", "data": summary})
 
             # Wait before the next global scan
             await asyncio.sleep(AUTOTRADE_SCAN_SECONDS)
@@ -1209,6 +2038,109 @@ async def autotrade_scanner_loop():
         except Exception as e:
             print(f"Autotrade scanner error: {e}")
             await asyncio.sleep(60)
+
+
+async def market_tick_scheduler_loop():
+    """
+    Authoritative single market tick scheduler and real-time live P&L engine.
+    Fulfills Part 9 & Part 24: Single controlled scheduler across the entire application.
+    Gathers active symbols, fetches quotes, updates Valkey, updates live trade P&L in O(1),
+    and broadcasts synchronized real-time ticks to Go stream hub and WebSocket connections.
+    """
+    while True:
+        try:
+            # 1. Discover all symbols with active positions
+            active_symbols = {"BTC-USD", "ETH-USD"}
+            try:
+                open_trades = db.get_open_positions()
+                for tr in open_trades:
+                    sym = tr.get("asset")
+                    if sym:
+                        active_symbols.add(sym.strip().upper())
+            except Exception:
+                pass
+
+            for sym in list(active_symbols):
+                try:
+                    quote = await market_service.get_quote(sym)
+                    if not quote or quote.price <= 0:
+                        continue
+                    curr_price = float(quote.price)
+
+                    # Update Valkey live price cache (TTL 15s)
+                    valkey_service.set(f"market:price:{sym}", {
+                        "symbol": sym,
+                        "price": curr_price,
+                        "previous_close": float(quote.previous_close or curr_price),
+                        "change": float(quote.change or 0.0),
+                        "change_percent": float(quote.change_percent or 0.0),
+                        "updated_at": datetime.now().isoformat()
+                    }, ttl_seconds=15)
+
+                    # Publish tick to high-concurrency Go stream hub
+                    tick_payload = {
+                        "time": int(datetime.now().timestamp()),
+                        "open": curr_price,
+                        "high": max(curr_price, curr_price * 1.0005),
+                        "low": min(curr_price, curr_price * 0.9995),
+                        "close": curr_price,
+                        "volume": float(quote.volume or 0.0),
+                        "symbol": sym,
+                        "changePercent": float(quote.change_percent or 0.0),
+                    }
+                    publish_tick(tick_payload)
+
+                    # Find affected active trades for this symbol in O(1)
+                    trade_ids = valkey_service.smembers(f"symbol:{sym}:active_trades")
+                    if trade_ids:
+                        for tid in trade_ids:
+                            trade_data = valkey_service.get(f"trade:active:{tid}")
+                            if trade_data and isinstance(trade_data, dict):
+                                entry = float(trade_data.get("entry_price") or curr_price)
+                                qty = float(trade_data.get("remaining_quantity") or trade_data.get("quantity") or 0.0)
+                                lev = float(trade_data.get("leverage") or 1.0)
+                                side = str(trade_data.get("side") or trade_data.get("type") or "BUY").upper()
+
+                                # P&L calculation based on side
+                                if side in ("BUY", "LONG"):
+                                    unrealized = (curr_price - entry) * qty * lev
+                                else:
+                                    unrealized = (entry - curr_price) * qty * lev
+
+                                margin = float(trade_data.get("margin_used") or ((qty * entry) / lev))
+                                unrealized_pct = (unrealized / margin * 100.0) if margin > 0 else 0.0
+
+                                trade_data["current_price"] = round(curr_price, 4)
+                                trade_data["unrealized_pnl"] = round(unrealized, 2)
+                                trade_data["unrealized_pnl_pct"] = round(unrealized_pct, 2)
+                                trade_data["unrealized_pnl_percent"] = round(unrealized_pct, 2)
+                                trade_data["updated_at"] = datetime.now().isoformat()
+                                valkey_service.set(f"trade:active:{tid}", trade_data, ttl_seconds=300)
+
+                                # Broadcast updated trade to owner
+                                uid = trade_data.get("user_id", 1)
+                                await manager.send_to_user(uid, {
+                                    "type": "trade_updated",
+                                    "data": trade_data,
+                                    "trade_id": tid,
+                                    "current_price": round(curr_price, 4),
+                                    "unrealized_pnl": round(unrealized, 2)
+                                })
+                                await manager.send_to_user(uid, {
+                                    "type": "position_updated",
+                                    "position": trade_data
+                                })
+                except Exception as sym_err:
+                    logger.debug(f"[MarketScheduler] Error ticking symbol {sym}: {sym_err}")
+
+            # Tick interval: 2.5 seconds
+            await asyncio.sleep(2.5)
+        except asyncio.CancelledError:
+            break
+        except Exception as loop_err:
+            logger.warning(f"[MarketScheduler] Exception in tick loop: {loop_err}")
+            await asyncio.sleep(5.0)
+
 
 # Serve node_modules for local scripts, when present. StaticFiles raises at
 # import time if the directory is missing, which crashed the Docker image (it
