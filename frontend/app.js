@@ -3,6 +3,7 @@
 let tvWidget = null;       // TradingView Widget instance
 let socket = null;
 let currentAsset = "";
+let currentTimeframe = "1d";
 let currentUsername = "Trader Account";
 let currentUserId = null;   // populated after login — fixes bot-config API calls
 
@@ -10,6 +11,12 @@ let currentUserId = null;   // populated after login — fixes bot-config API ca
 let _wsReconnectAttempts = 0;
 let _wsReconnectTimer = null;
 let _wsIntentionallyClosed = false;
+
+// Phase 11 — orbit-stream Go hub secondary WebSocket
+// Receives high-frequency tick and metrics from the Go broadcast hub.
+// The primary Python WS (:8000/ws) handles signals, wallet, logs, positions.
+let _streamSocket = null;
+let _streamReconnectTimer = null;
 
 // News Scroll & Cache variables (hoisted early to prevent TDZ ReferenceErrors)
 let _newsScrollRAF = null;
@@ -39,13 +46,17 @@ const dashboardPage = document.getElementById("dashboard-page");
 const menuBtnDashboard = document.getElementById("menu-btn-dashboard");
 const menuBtnTerminal = document.getElementById("menu-btn-terminal");
 const menuBtnAutotrade = document.getElementById("menu-btn-autotrade");
+const menuBtnManageTrades = document.getElementById("menu-btn-manage-trades");
 const menuBtnReports = document.getElementById("menu-btn-reports");
+const menuBtnCopilot = document.getElementById("menu-btn-copilot");
 
 // Content containers
 const tabContentOverview = document.getElementById("tab-content-overview");
 const tabContentTerminal = document.getElementById("tab-content-terminal");
 const tabContentAutotrade = document.getElementById("tab-content-autotrade");
+const tabContentManageTrades = document.getElementById("tab-content-manage-trades");
 const tabContentReports = document.getElementById("tab-content-reports");
+const tabContentCopilot = document.getElementById("tab-content-copilot");
 
 // Sub-views for Tab 2
 const terminalStockSelectView = document.getElementById("terminal-stock-select-view");
@@ -113,47 +124,101 @@ function switchToTab(tabName) {
         menuBtnDashboard.classList.add("active");
         menuBtnTerminal.classList.remove("active");
         if(menuBtnAutotrade) menuBtnAutotrade.classList.remove("active");
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.remove("active");
         if(menuBtnReports) menuBtnReports.classList.remove("active");
+        if(menuBtnCopilot) menuBtnCopilot.classList.remove("active");
         tabContentOverview.classList.remove("hidden-tab");
         tabContentTerminal.classList.add("hidden-tab");
         if(tabContentAutotrade) tabContentAutotrade.classList.add("hidden-tab");
+        if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
         if(tabContentReports) tabContentReports.classList.add("hidden-tab");
+        if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
         contentHeaderTitle.textContent = "Dashboard Overview";
-        // Dashboard always shows GLOBAL market news
+        // Dashboard always shows GLOBAL market news & real-time dashboard summary
         fetchGlobalNews();
+        fetchDashboardSummary();
     } else if (tabName === "terminal") {
         menuBtnTerminal.classList.add("active");
         menuBtnDashboard.classList.remove("active");
         if(menuBtnAutotrade) menuBtnAutotrade.classList.remove("active");
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.remove("active");
         if(menuBtnReports) menuBtnReports.classList.remove("active");
+        if(menuBtnCopilot) menuBtnCopilot.classList.remove("active");
         tabContentTerminal.classList.remove("hidden-tab");
         tabContentOverview.classList.add("hidden-tab");
         if(tabContentAutotrade) tabContentAutotrade.classList.add("hidden-tab");
+        if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
         if(tabContentReports) tabContentReports.classList.add("hidden-tab");
+        if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
         contentHeaderTitle.textContent = "Trade Agent Terminal";
         // TradingView widget uses autosize — no manual resize needed
     } else if (tabName === "autotrade") {
         if(menuBtnAutotrade) menuBtnAutotrade.classList.add("active");
         menuBtnDashboard.classList.remove("active");
         menuBtnTerminal.classList.remove("active");
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.remove("active");
         if(menuBtnReports) menuBtnReports.classList.remove("active");
+        if(menuBtnCopilot) menuBtnCopilot.classList.remove("active");
         if(tabContentAutotrade) tabContentAutotrade.classList.remove("hidden-tab");
         tabContentTerminal.classList.add("hidden-tab");
         tabContentOverview.classList.add("hidden-tab");
+        if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
         if(tabContentReports) tabContentReports.classList.add("hidden-tab");
+        if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
         contentHeaderTitle.textContent = "Auto-Trade Bot Configuration";
         loadBotConfig();
+    } else if (tabName === "manage-trades") {
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.add("active");
+        menuBtnDashboard.classList.remove("active");
+        menuBtnTerminal.classList.remove("active");
+        if(menuBtnAutotrade) menuBtnAutotrade.classList.remove("active");
+        if(menuBtnReports) menuBtnReports.classList.remove("active");
+        if(menuBtnCopilot) menuBtnCopilot.classList.remove("active");
+        if(tabContentManageTrades) tabContentManageTrades.classList.remove("hidden-tab");
+        tabContentOverview.classList.add("hidden-tab");
+        tabContentTerminal.classList.add("hidden-tab");
+        if(tabContentAutotrade) tabContentAutotrade.classList.add("hidden-tab");
+        if(tabContentReports) tabContentReports.classList.add("hidden-tab");
+        if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
+        contentHeaderTitle.textContent = "Manage Trades";
+        loadManageTradesData();
     } else if (tabName === "reports") {
         if(menuBtnReports) menuBtnReports.classList.add("active");
         menuBtnDashboard.classList.remove("active");
         menuBtnTerminal.classList.remove("active");
         if(menuBtnAutotrade) menuBtnAutotrade.classList.remove("active");
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.remove("active");
+        if(menuBtnCopilot) menuBtnCopilot.classList.remove("active");
         if(tabContentReports) tabContentReports.classList.remove("hidden-tab");
         tabContentOverview.classList.add("hidden-tab");
         tabContentTerminal.classList.add("hidden-tab");
         if(tabContentAutotrade) tabContentAutotrade.classList.add("hidden-tab");
+        if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
+        if(tabContentCopilot) tabContentCopilot.classList.add("hidden-tab");
         contentHeaderTitle.textContent = "Trade Reports & Analytics";
         loadReport();
+    } else if (tabName === "copilot") {
+        if(menuBtnCopilot) menuBtnCopilot.classList.add("active");
+        menuBtnDashboard.classList.remove("active");
+        menuBtnTerminal.classList.remove("active");
+        if(menuBtnAutotrade) menuBtnAutotrade.classList.remove("active");
+        if(menuBtnManageTrades) menuBtnManageTrades.classList.remove("active");
+        if(menuBtnReports) menuBtnReports.classList.remove("active");
+        if(tabContentCopilot) tabContentCopilot.classList.remove("hidden-tab");
+        tabContentOverview.classList.add("hidden-tab");
+        tabContentTerminal.classList.add("hidden-tab");
+        if(tabContentAutotrade) tabContentAutotrade.classList.add("hidden-tab");
+        if(tabContentManageTrades) tabContentManageTrades.classList.add("hidden-tab");
+        if(tabContentReports) tabContentReports.classList.add("hidden-tab");
+        contentHeaderTitle.textContent = "ORBIT AI Analyst";
+        if (window.aether3D) window.aether3D.stop();
+        const threeCanvas = document.getElementById("three-canvas");
+        if (threeCanvas) {
+            threeCanvas.style.display = "none";
+        }
+        syncCopilotPageView();
+        loadConversationsList();
+        syncCopilotBalance();
     }
 }
 
@@ -162,8 +227,14 @@ menuBtnTerminal.addEventListener("click", () => switchToTab("terminal"));
 if (menuBtnAutotrade) {
     menuBtnAutotrade.addEventListener("click", () => switchToTab("autotrade"));
 }
+if (menuBtnManageTrades) {
+    menuBtnManageTrades.addEventListener("click", () => switchToTab("manage-trades"));
+}
 if (menuBtnReports) {
     menuBtnReports.addEventListener("click", () => switchToTab("reports"));
+}
+if (menuBtnCopilot) {
+    menuBtnCopilot.addEventListener("click", () => switchToTab("copilot"));
 }
 
 // Auto-Trade Bot Logic
@@ -255,6 +326,54 @@ let clerkInstance = null;
 let isClerkActive = false;
 let clerkInitPromise = null;
 
+// Sync Clerk user with PostgreSQL / SQLite database and launch terminal
+async function syncClerkUserAndEnter(u) {
+    if (!u) return false;
+
+    const userEmail = (u.primaryEmailAddress && u.primaryEmailAddress.emailAddress) ||
+                      (u.emailAddresses && u.emailAddresses[0] && u.emailAddresses[0].emailAddress) || "";
+
+    let displayName = u.fullName || u.username || "";
+    if (!displayName && u.firstName) {
+        displayName = u.firstName + (u.lastName ? " " + u.lastName : "");
+    }
+    if (!displayName && userEmail) {
+        displayName = userEmail.split("@")[0];
+    }
+    if (!displayName) {
+        displayName = "Google Trader";
+    }
+
+    try {
+        const syncRes = await fetch("/api/auth/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email: userEmail,
+                username: displayName,
+                clerk_id: u.id
+            })
+        });
+
+        const data = await syncRes.json();
+        if (data && data.ok && data.user_id) {
+            console.log(`[Orbit Auth] Clerk user ${displayName} (${userEmail}) stored in DB user #${data.user_id}`);
+            sessionStorage.removeItem("orbit_oauth_in_progress");
+            enterDashboard(data.username || displayName, data.user_id);
+            return true;
+        } else {
+            console.warn("[Orbit Auth] DB sync response not ok:", data);
+        }
+    } catch (err) {
+        console.error("[Orbit Auth] Failed to sync Clerk user with database:", err);
+    }
+
+    sessionStorage.removeItem("orbit_oauth_in_progress");
+    enterDashboard(displayName, 18);
+    return false;
+}
+window.syncClerkUserAndEnter = syncClerkUserAndEnter;
+
 async function initClerkAuth() {
     if (clerkInitPromise) return clerkInitPromise;
     clerkInitPromise = (async () => {
@@ -281,10 +400,37 @@ async function initClerkAuth() {
                 isClerkActive = true;
                 console.log("[Orbit Auth] Clerk Headless SDK loaded with custom UI.");
 
+                // Process OAuth return callback if present
+                if (window.location.search.includes("__clerk") || window.location.hash.includes("__clerk")) {
+                    try {
+                        if (typeof clerkInstance.handleRedirectCallback === "function") {
+                            await clerkInstance.handleRedirectCallback();
+                        }
+                    } catch (cbErr) {
+                        console.warn("[Orbit Auth] Clerk redirect callback:", cbErr);
+                    }
+                }
+
+                // Listen for active sessions (e.g. background OAuth completion)
+                if (typeof clerkInstance.addListener === "function") {
+                    clerkInstance.addListener(async (state) => {
+                        if (state && state.user && state.session) {
+                            if (!currentUserId || !document.body.classList.contains("in-dashboard")) {
+                                await syncClerkUserAndEnter(state.user);
+                            }
+                        }
+                    });
+                }
+
+                // If user is already authenticated or returning from Google OAuth
+                const isReturningFromOAuth = sessionStorage.getItem("orbit_oauth_in_progress") === "1"
+                    || window.location.hash.includes("dashboard")
+                    || window.location.search.includes("__clerk");
+
                 if (clerkInstance.user && clerkInstance.session) {
-                    const u = clerkInstance.user;
-                    const displayName = u.username || u.firstName || (u.primaryEmailAddress && u.primaryEmailAddress.emailAddress) || "Trader Account";
-                    enterDashboard(displayName, u.id);
+                    if (isReturningFromOAuth) {
+                        await syncClerkUserAndEnter(clerkInstance.user);
+                    }
                 }
             }
         } catch (err) {
@@ -311,11 +457,13 @@ function enterDashboard(username, userId) {
     if (userId) localStorage.setItem("orbit_user_id", String(userId));
     window.location.hash = "#dashboard";
 
-    // Update body class and stop 3D WebGL background
+    // Update body class and stop 3D WebGL candlestick background (only runs on landing and login/signup)
     document.body.classList.add("in-dashboard");
     if (window.aether3D) window.aether3D.stop();
     const threeCanvas = document.getElementById("three-canvas");
-    if (threeCanvas) threeCanvas.style.display = "none";
+    if (threeCanvas) {
+        threeCanvas.style.display = "none";
+    }
 
     // Hide landing wrapper & show dashboard
     if (landingPage) {
@@ -333,6 +481,7 @@ function enterDashboard(username, userId) {
     // Initialize connection immediately to sync DB stats and open default tab
     setTimeout(() => {
         try { connectWebSocket(); } catch (e) { console.warn("Socket connect warning:", e); }
+        try { connectStreamHub(); } catch (e) { console.warn("[orbit-stream] hub connect warning:", e); }
         try { switchToTab("dashboard"); } catch (e) { console.warn("Tab switch warning:", e); }
         try { fetchGlobalNews(); } catch (e) { console.warn("News fetch warning:", e); }
     }, 50);
@@ -418,7 +567,7 @@ function togglePw(inputId, buttonEl) {
 }
 window.togglePw = togglePw;
 
-// Google 1-Click Authentication (Direct & In-App, Zero External Redirects)
+// Google OAuth Authentication via Clerk
 async function handleClerkGoogleAuth() {
     const btn = document.getElementById("login-google-btn") || document.getElementById("signup-google-btn");
     const originalText = btn ? btn.innerHTML : "";
@@ -428,31 +577,51 @@ async function handleClerkGoogleAuth() {
     }
 
     try {
-        // Direct seamless Google sign-in linked to database
-        const googleEmail = localStorage.getItem("orbit_google_email") || "yendheparth091@gmail.com";
-        const displayName = "Parth (Google)";
-        
-        const syncRes = await fetch("/api/auth/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                email: googleEmail,
-                username: displayName,
-                clerk_id: "google_" + googleEmail.replace(/[^a-zA-Z0-9]/g, "_")
-            })
-        });
+        await initClerkAuth();
 
-        const data = await syncRes.json();
-        if (data && data.ok) {
-            enterDashboard(data.username, data.user_id);
+        if (!clerkInstance) {
+            throw new Error("Clerk authentication is not ready yet. Please check your internet connection.");
+        }
+
+        // If user already has an active Clerk session, sync to DB and launch console
+        if (clerkInstance.user && clerkInstance.session) {
+            const synced = await syncClerkUserAndEnter(clerkInstance.user);
+            if (synced) return;
+        }
+
+        // Mark OAuth in progress so the return page knows to complete transition
+        sessionStorage.setItem("orbit_oauth_in_progress", "1");
+
+        const redirectUrl = window.location.origin + window.location.pathname;
+        const redirectUrlComplete = window.location.origin + window.location.pathname + "#dashboard";
+
+        const oauthParams = {
+            strategy: "oauth_google",
+            redirectUrl: redirectUrl,
+            redirectUrlComplete: redirectUrlComplete,
+            additionalData: {
+                prompt: "select_account"
+            },
+            oidcPrompt: "select_account"
+        };
+
+        if (typeof clerkInstance.authenticateWithRedirect === "function") {
+            await clerkInstance.authenticateWithRedirect(oauthParams);
+            return;
+        } else if (clerkInstance.client && clerkInstance.client.signIn && typeof clerkInstance.client.signIn.authenticateWithRedirect === "function") {
+            await clerkInstance.client.signIn.authenticateWithRedirect(oauthParams);
             return;
         } else {
-            enterDashboard(displayName, 18);
-            return;
+            throw new Error("Clerk OAuth redirect method unavailable.");
         }
     } catch (err) {
         console.error("Google auth error:", err);
-        enterDashboard("Parth (Google)", 18);
+        sessionStorage.removeItem("orbit_oauth_in_progress");
+        const errorEl = document.getElementById("login-error") || document.getElementById("signup-error");
+        if (errorEl) {
+            errorEl.textContent = "Google login error: " + (err.message || "Failed to connect with Google.");
+            errorEl.classList.remove("hidden");
+        }
     } finally {
         if (btn) {
             btn.innerHTML = originalText;
@@ -645,6 +814,9 @@ logoutBtn.addEventListener("click", async () => {
     btnDrawSR.classList.remove("active-btn");
 
     // Restart 3D background for landing page
+    document.body.classList.remove("in-dashboard");
+    const threeCanvas = document.getElementById("three-canvas");
+    if (threeCanvas) threeCanvas.style.display = "block";
     if (window.aether3D) window.aether3D.start();
 
     // Transition back to landing page
@@ -797,6 +969,7 @@ document.querySelectorAll(".tf-btn").forEach(btn => {
 
 function setTimeframe(tf) {
     currentInterval = tf;
+    currentTimeframe = tf;
 
     // Update active button highlight
     document.querySelectorAll(".tf-btn").forEach(b => b.classList.remove("tf-active"));
@@ -1246,12 +1419,16 @@ function resetGauges() {
 }
 
 // ── GLOBAL market news for the Dashboard panel ──
-// Use rAF-based scroll with slow reading speed (0.2px per frame)
+// Use rAF-based scroll with slow, readable pace (~18-20px per second)
+let _newsScrollPos = 0;
 function _newsRAFScroll() {
     if (_newsScrollEl && !_newsIsPaused) {
-        _newsScrollEl.scrollTop += 0.2;
+        _newsScrollPos += 0.35;
         const mid = _newsScrollEl.scrollHeight / 2;
-        if (_newsScrollEl.scrollTop >= mid) _newsScrollEl.scrollTop = 0;
+        if (mid > 0 && _newsScrollPos >= mid) {
+            _newsScrollPos = 0;
+        }
+        _newsScrollEl.scrollTop = _newsScrollPos;
     }
     _newsScrollRAF = requestAnimationFrame(_newsRAFScroll);
 }
@@ -1302,6 +1479,9 @@ function renderGlobalNewsHeadlines(headlines) {
         frag.appendChild(card);
     });
 
+    stopNewsScroll();
+    _newsScrollPos = 0;
+    dashEl.scrollTop = 0;
     dashEl.innerHTML = "";
     dashEl.appendChild(frag);
 
@@ -1309,8 +1489,16 @@ function renderGlobalNewsHeadlines(headlines) {
     if (headlines.length > 2) {
         dashEl.innerHTML += dashEl.innerHTML;
 
-        dashEl.addEventListener("mouseenter", () => { _newsIsPaused = true; }, { passive: true });
-        dashEl.addEventListener("mouseleave", () => { _newsIsPaused = false; }, { passive: true });
+        if (!dashEl._newsEventsBound) {
+            dashEl._newsEventsBound = true;
+            dashEl.addEventListener("mouseenter", () => { _newsIsPaused = true; }, { passive: true });
+            dashEl.addEventListener("mouseleave", () => { _newsIsPaused = false; }, { passive: true });
+            dashEl.addEventListener("scroll", () => {
+                if (_newsIsPaused && _newsScrollEl) {
+                    _newsScrollPos = _newsScrollEl.scrollTop;
+                }
+            }, { passive: true });
+        }
 
         _newsScrollEl = dashEl;
         _newsIsPaused = false;
@@ -1381,7 +1569,9 @@ function renderSymbolHeadlines(headlines, scrollEl, symbol) {
     });
 
     scrollEl.innerHTML += scrollEl.innerHTML;
-    const duration = Math.max(60, Math.floor(scrollEl.scrollHeight / 8));
+    // Slow, comfortable reading speed: ~12-14px per second
+    const singleSetHeight = scrollEl.scrollHeight / 2;
+    const duration = Math.max(50, Math.floor(singleSetHeight / 14));
     scrollEl.style.animation = `newsScrollUp ${duration}s linear infinite`;
 }
 
@@ -1423,8 +1613,11 @@ async function fetchNews(symbol) {
 function updateOverviewMetrics(data) {
     if (data.consensus) {
         const statusEl = document.getElementById("overview-consensus-status");
-        statusEl.textContent = data.consensus.signal.toUpperCase();
-        statusEl.className = data.consensus.signal === "buy" ? "text-green" : data.consensus.signal === "sell" ? "text-red" : "text-blue";
+        const sig = (data.consensus.signal || "").toUpperCase();
+        statusEl.textContent = sig;
+        statusEl.className = (sig === "BUY" || sig === "BULLISH") ? "text-green" : 
+                             (sig === "SELL" || sig === "BEARISH") ? "text-red" : 
+                             (sig === "MIXED") ? "text-yellow" : "text-blue";
     }
     if (data.sentiment !== undefined) {
         const statusEl = document.getElementById("overview-sentiment-status");
@@ -1461,16 +1654,18 @@ function updateOverviewHistoryStats(trades) {
     // them as losses dragged the win rate down for trades that never happened.
     const closedTrades = trades.filter(t => t.status === 'closed');
     const settledTrades = closedTrades.filter(t => t.outcome !== 'cancelled');
-    const wins = settledTrades.filter(t => t.pnl > 0).length;
-    const losses = settledTrades.filter(t => t.pnl <= 0).length;
+    const wins = settledTrades.filter(t => (t.pnl !== undefined ? t.pnl : t.realized_pnl) > 0).length;
+    const losses = settledTrades.filter(t => (t.pnl !== undefined ? t.pnl : t.realized_pnl) <= 0).length;
 
-    const winRate = settledTrades.length > 0 ? (wins / settledTrades.length) * 100 : 0.0;
-    document.getElementById("overview-win-rate").textContent = `${winRate.toFixed(1)}%`;
-
-    // Win Rate progress bar fill
+    const winRateEl = document.getElementById("overview-win-rate");
     const barFill = document.getElementById("overview-winrate-bar");
-    if (barFill) {
-        barFill.style.width = `${winRate}%`;
+    if (settledTrades.length > 0) {
+        const winRate = (wins / settledTrades.length) * 100;
+        if (winRateEl) winRateEl.textContent = `${winRate.toFixed(1)}%`;
+        if (barFill) barFill.style.width = `${winRate}%`;
+    } else {
+        if (winRateEl) winRateEl.textContent = "—";
+        if (barFill) barFill.style.width = "0%";
     }
 
     // Win Loss text
@@ -1498,7 +1693,7 @@ function updateOverviewHistoryStats(trades) {
             historyList.innerHTML = "";
             // Show most recent first
             [...closedTrades].reverse().forEach(trade => {
-                const pnl = trade.pnl || 0;
+                const pnl = trade.pnl !== undefined ? trade.pnl : (trade.realized_pnl || 0);
                 const pnlColor = pnl >= 0 ? "text-green" : "text-red";
                 const pnlStr = (pnl >= 0 ? "+" : "") + formatINR(pnl);
                 const dirClass = trade.type === "buy" ? "buy" : "sell";
@@ -1513,7 +1708,7 @@ function updateOverviewHistoryStats(trades) {
                 item.innerHTML = `
                     <div class="chi-direction ${dirClass}">${dirIcon}</div>
                     <div class="chi-details">
-                        <div class="chi-asset">${esc(trade.asset || "—")}</div>
+                        <div class="chi-asset">${esc(trade.asset || trade.symbol || "—")}</div>
                         <div class="chi-time">${timeStr}</div>
                     </div>
                     <span class="chi-pnl ${pnlColor}">${pnlStr}</span>
@@ -1523,6 +1718,71 @@ function updateOverviewHistoryStats(trades) {
         }
     }
 }
+
+// Render centralized dashboard summary (authoritative single source of truth)
+function renderDashboardSummary(data) {
+    if (!data) return;
+    const account = data.account || {};
+    const trading = data.trading || {};
+
+    const balanceEl = document.getElementById("overview-balance");
+    if (balanceEl && account.total_capital !== undefined) {
+        balanceEl.textContent = formatINR(account.total_capital);
+    }
+    const walletEl = document.getElementById("wallet-balance");
+    if (walletEl && account.available_balance !== undefined) {
+        walletEl.textContent = formatINR(account.available_balance);
+    }
+
+    const activeTradesEl = document.getElementById("overview-active-trades");
+    if (activeTradesEl && trading.active_trades !== undefined) {
+        activeTradesEl.textContent = trading.active_trades;
+    }
+
+    const unrealizedEl = document.getElementById("overview-unrealized-pnl");
+    if (unrealizedEl && trading.unrealized_pnl !== undefined) {
+        const uPnl = Number(trading.unrealized_pnl);
+        unrealizedEl.textContent = (uPnl >= 0 ? "+" : "") + formatINR(uPnl);
+        unrealizedEl.className = "stat-value " + (uPnl >= 0 ? "text-green" : "text-red");
+    }
+
+    const realizedEl = document.getElementById("overview-realized-pnl");
+    if (realizedEl && trading.realized_pnl !== undefined) {
+        const rPnl = Number(trading.realized_pnl);
+        realizedEl.textContent = (rPnl >= 0 ? "+" : "") + formatINR(rPnl);
+        realizedEl.className = "stat-value " + (rPnl >= 0 ? "text-green" : "text-red");
+    }
+
+    const winRateEl = document.getElementById("overview-win-rate");
+    const barFill = document.getElementById("overview-winrate-bar");
+    if (winRateEl) {
+        if (trading.total_closed_trades && trading.total_closed_trades > 0 && trading.win_rate !== null && trading.win_rate !== undefined) {
+            const wr = Number(trading.win_rate);
+            winRateEl.textContent = `${wr.toFixed(1)}%`;
+            if (barFill) barFill.style.width = `${Math.min(100, Math.max(0, wr))}%`;
+        } else {
+            winRateEl.textContent = "—";
+            if (barFill) barFill.style.width = "0%";
+        }
+    }
+}
+window.renderDashboardSummary = renderDashboardSummary;
+
+// Fetch authoritative dashboard summary from REST endpoint
+async function fetchDashboardSummary() {
+    try {
+        const userId = currentUserId || (typeof localStorage !== "undefined" ? localStorage.getItem("orbit_user_id") : null) || 1;
+        const res = await fetch(`/api/dashboard/summary?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        if (json.ok && json.data) {
+            renderDashboardSummary(json.data);
+        }
+    } catch (err) {
+        console.warn("[Dashboard] Error fetching summary:", err);
+    }
+}
+window.fetchDashboardSummary = fetchDashboardSummary;
 
 // WebSocket Connection Setup (state variables declared at top of module)
 function connectWebSocket() {
@@ -1558,11 +1818,25 @@ function connectWebSocket() {
                 }
                 break;
 
+            case "price_update":
             case "tick":
+                // Suppress duplicate tick update if Go high-speed hub is actively streaming
+                if (_streamSocket && _streamSocket.readyState === WebSocket.OPEN) {
+                    break;
+                }
                 // Update legend price display
                 if (data.candle) {
                     updateLegend(data.candle.close, data.changePercent || 0);
+                } else if (data.data && data.data.price) {
+                    updateLegend(data.data.price, data.data.change_percent || 0);
                 }
+                break;
+
+            case "trade_opened":
+            case "trade_updated":
+            case "trade_closed":
+                loadOpenTrades();
+                fetchDashboardSummary();
                 break;
 
             case "levels":
@@ -1593,17 +1867,31 @@ function connectWebSocket() {
                 updateOverviewMetrics(data);
                 break;
 
+            case "dashboard_summary":
+                renderDashboardSummary(data.data || data);
+                break;
+
+            case "wallet_updated":
             case "wallet": {
-                const fmt = formatINR(data.balance);
-                if (walletBalanceEl) walletBalanceEl.textContent = fmt;
-                const ob = document.getElementById("overview-balance");
-                if (ob) ob.textContent = fmt;
+                const bal = data.balance !== undefined ? data.balance : (data.data ? data.data.balance : null);
+                if (bal !== null) {
+                    const fmt = formatINR(bal);
+                    if (walletBalanceEl) walletBalanceEl.textContent = fmt;
+                    const ob = document.getElementById("overview-balance");
+                    if (ob) ob.textContent = fmt;
+                }
+                fetchDashboardSummary();
                 break;
             }
 
+            case "positions_updated":
+            case "position_updated":
             case "positions":
-                updatePositionsTable(data.positions);
-                updateOverviewPositionsStats(data.positions);
+                if (data.positions) {
+                    updatePositionsTable(data.positions);
+                    updateOverviewPositionsStats(data.positions);
+                }
+                loadOpenTrades();
 
                 // If there's an active trade for this symbol, draw the green/red profit-loss tool on the chart!
                 const activeTrade = data.positions && data.positions.find(p => p.status === "active" && p.asset === currentAsset);
@@ -1627,6 +1915,7 @@ function connectWebSocket() {
             case "history_trades":
                 updateHistoryTable(data.trades);
                 updateOverviewHistoryStats(data.trades);
+                loadTradeHistoryPage(currentHistoryPage || 0);
                 break;
 
             case "auth_error":
@@ -1663,6 +1952,55 @@ function connectWebSocket() {
 
     socket.onerror = (error) => {
         console.error("WebSocket Error:", error);
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 — orbit-stream Go hub connection
+// Opens a secondary lightweight WebSocket to :8001/ws.  Incoming tick and
+// metrics messages are routed to the same handlers as the Python WS so the
+// rest of the UI code needs zero changes.  Reconnects automatically.
+// Falls back silently if orbit-stream is not running.
+// ---------------------------------------------------------------------------
+function connectStreamHub() {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const hostname = window.location.hostname || "localhost";
+    const hubPort = window.ORBIT_HUB_PORT || "8001";
+    const hubUrl = `${protocol}//${hostname}:${hubPort}/ws`;
+
+    try {
+        _streamSocket = new WebSocket(hubUrl);
+    } catch (e) {
+        console.warn("[orbit-stream] could not open hub socket:", e);
+        return;
+    }
+
+    _streamSocket.onopen = () => {
+        console.log("[orbit-stream] Go hub connected — high-frequency tick stream active");
+    };
+
+    _streamSocket.onmessage = (event) => {
+        let data;
+        try { data = JSON.parse(event.data); } catch { return; }
+        // Route tick and metrics to the existing Python WS handlers.
+        // All other message types are ignored here (handled by Python WS).
+        if (data.type === "tick" && data.candle) {
+            updateLegend(data.candle.close, data.changePercent || 0);
+        } else if (data.type === "metrics") {
+            updateMetrics(data);
+            updateOverviewMetrics(data);
+        }
+    };
+
+    _streamSocket.onclose = () => {
+        if (_wsIntentionallyClosed) return;
+        // Reconnect after 3 s — hub may restart independently of Python backend.
+        clearTimeout(_streamReconnectTimer);
+        _streamReconnectTimer = setTimeout(connectStreamHub, 3000);
+    };
+
+    _streamSocket.onerror = () => {
+        // Hub not running — fail silently; Python WS fallback handles ticks.
     };
 }
 
@@ -2115,7 +2453,11 @@ function clearSRPanel() {
 // Auto-login on page refresh ONLY if explicitly navigating to #dashboard
 document.addEventListener("DOMContentLoaded", () => {
     initClerkAuth();
-    if (window.location.hash === "#dashboard") {
+    if (window.location.hash.includes("dashboard")) {
+        document.body.classList.add("in-dashboard");
+        if (window.aether3D) window.aether3D.stop();
+        const threeCanvas = document.getElementById("three-canvas");
+        if (threeCanvas) threeCanvas.style.display = "none";
         try { fetchGlobalNews(); } catch (e) {}
         const savedUsername = localStorage.getItem("orbit_logged_in_username");
         const savedUserId = localStorage.getItem("orbit_user_id");
@@ -2129,6 +2471,10 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
     }
     // Always ensure landing page is visible on default root visit
+    document.body.classList.remove("in-dashboard");
+    const threeCanvas = document.getElementById("three-canvas");
+    if (threeCanvas) threeCanvas.style.display = "block";
+    if (window.aether3D) window.aether3D.start();
     if (landingPage) landingPage.classList.remove("hidden");
     if (dashboardPage) dashboardPage.classList.add("hidden");
 });
@@ -3151,4 +3497,2793 @@ if (document.readyState === "complete" || document.readyState === "interactive")
     renderStrategies();
     drawBtcSparkline();
 }
+
+// -------------------------------------------------------------
+//   PHASE 4: STRATEGY SUITE INSPECTION MODAL
+// -------------------------------------------------------------
+
+function openStrategyModal() {
+    const modal = document.getElementById("strategy-inspect-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("strat-modal-subtitle");
+    if (sub) sub.textContent = `Evaluating real-time market setups on ${currentAsset || 'BTC-USD'} (${currentTimeframe || '1d'})`;
+    refreshStrategyModal();
+}
+window.openStrategyModal = openStrategyModal;
+
+function closeStrategyModal() {
+    const modal = document.getElementById("strategy-inspect-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeStrategyModal = closeStrategyModal;
+
+async function refreshStrategyModal() {
+    const grid = document.getElementById("strategy-modal-grid");
+    const tallyEl = document.getElementById("strat-tally-text");
+    const timeBadge = document.getElementById("strat-time-badge");
+    const sub = document.getElementById("strat-modal-subtitle");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Evaluating real-time market setups on ${asset} (${tf})`;
+    if (tallyEl) tallyEl.innerHTML = `<span class="status-dot green-glow"></span> Querying Market Data System...`;
+
+    try {
+        const res = await fetch(`/api/strategies/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Evaluation failed: ${esc(json.detail || "Server error")}`;
+            if (grid) grid.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Failed to evaluate strategies. ${esc(json.detail || "")}</div>`;
+            return;
+        }
+
+        const data = json.data;
+        if (timeBadge) timeBadge.textContent = `${data.execution_time_ms.toFixed(1)} ms`;
+
+        const bullCount = data.tally.BULLISH || 0;
+        const bearCount = data.tally.BEARISH || 0;
+        const setupsFound = data.setups_found || 0;
+
+        if (tallyEl) {
+            tallyEl.innerHTML = `<strong>${setupsFound} of ${data.strategies_total}</strong> Setups Active &bull; ` +
+                `<span class="text-green">${bullCount} Bullish</span> &bull; ` +
+                `<span class="text-red">${bearCount} Bearish</span> &bull; ` +
+                `Avg Confidence: <strong>${data.average_confidence}%</strong>`;
+        }
+
+        if (grid && Array.isArray(data.results)) {
+            grid.innerHTML = data.results.map(r => {
+                const isSetup = r.setup_detected;
+                const cardClass = isSetup 
+                    ? (r.signal === "BULLISH" ? "strat-eval-card setup-active" : "strat-eval-card setup-bearish")
+                    : "strat-eval-card";
+
+                const badgeClass = r.signal === "BULLISH" 
+                    ? "strat-eval-badge strat-badge-bullish" 
+                    : (r.signal === "BEARISH" ? "strat-eval-badge strat-badge-bearish" : "strat-eval-badge strat-badge-neutral");
+
+                const statusTag = isSetup ? "● SETUP ACTIVE" : "○ NO SETUP";
+                const conditionsHtml = Object.entries(r.conditions || {}).map(([k, v]) => {
+                    const tagClass = v ? "cond-tag cond-true" : "cond-tag cond-false";
+                    const icon = v ? "✓" : "✗";
+                    return `<span class="${tagClass}">${icon} ${esc(k.replace(/_/g, ' '))}</span>`;
+                }).join("");
+
+                return `
+                    <div class="${cardClass}">
+                        <div class="strat-eval-header">
+                            <div class="strat-eval-title">
+                                <span class="${badgeClass}">${esc(r.signal)}</span>
+                                <span class="strat-eval-name">${esc(r.strategy_name)}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <span style="font-size:11px;font-family:var(--font-mono);font-weight:600;color:${isSetup ? 'var(--accent)' : 'var(--text-3)'}">${statusTag}</span>
+                                <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-2);">${r.confidence.toFixed(1)}%</span>
+                            </div>
+                        </div>
+                        <p class="strat-eval-reason">${esc(r.reasoning && r.reasoning[0] ? r.reasoning[0] : "Strategy criteria evaluated.")}</p>
+                        ${conditionsHtml ? `<div class="strat-eval-conditions">${conditionsHtml}</div>` : ""}
+                    </div>
+                `;
+            }).join("");
+        }
+    } catch (err) {
+        if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Error: ${esc(err.message)}`;
+        if (grid) grid.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Error connecting to Strategy Engine: ${esc(err.message)}</div>`;
+    }
+}
+window.refreshStrategyModal = refreshStrategyModal;
+
+// -------------------------------------------------------------
+//   PHASE 5: CONSENSUS ENGINE RADAR MODAL
+// -------------------------------------------------------------
+
+function openConsensusModal() {
+    const modal = document.getElementById("consensus-inspect-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("consensus-modal-subtitle");
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+    if (sub) sub.textContent = `Unified Market Consensus on ${asset} (${tf})`;
+    refreshConsensusModal();
+}
+window.openConsensusModal = openConsensusModal;
+
+function closeConsensusModal() {
+    const modal = document.getElementById("consensus-inspect-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeConsensusModal = closeConsensusModal;
+
+async function refreshConsensusModal() {
+    const body = document.getElementById("consensus-modal-body");
+    const tallyEl = document.getElementById("consensus-tally-text");
+    const timeBadge = document.getElementById("consensus-time-badge");
+    const sub = document.getElementById("consensus-modal-subtitle");
+
+    // Banner elements
+    const sigPill = document.getElementById("consensus-signal-pill");
+    const viewTitle = document.getElementById("consensus-view-title");
+    const viewSub = document.getElementById("consensus-view-sub");
+    const strengthVal = document.getElementById("consensus-strength-val");
+    const agreementVal = document.getElementById("consensus-agreement-val");
+    const agreementLevel = document.getElementById("consensus-agreement-level");
+
+    // Force labels & bars
+    const bullForceLbl = document.getElementById("consensus-bull-force-lbl");
+    const neutForceLbl = document.getElementById("consensus-neutral-force-lbl");
+    const bearForceLbl = document.getElementById("consensus-bear-force-lbl");
+    const barBull = document.getElementById("consensus-bar-bull");
+    const barNeut = document.getElementById("consensus-bar-neut");
+    const barBear = document.getElementById("consensus-bar-bear");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Unified Market Consensus on ${asset} (${tf})`;
+    if (tallyEl) tallyEl.innerHTML = `<span class="status-dot green-glow"></span> Running Agents & Quantitative Strategies...`;
+
+    try {
+        const res = await fetch(`/api/consensus/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Evaluation failed: ${esc(json.detail || "Server error")}`;
+            if (body) body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Failed to evaluate consensus. ${esc(json.detail || "")}</div>`;
+            return;
+        }
+
+        const data = json.data;
+        if (timeBadge) timeBadge.textContent = `${data.execution_time_ms.toFixed(1)} ms`;
+
+        const sig = data.consensus_signal || data.signal || "NEUTRAL";
+        const strength = data.consensus_strength ?? data.strength ?? 0;
+        const agreement = data.agreement_score ?? data.agreement_percentage ?? 0;
+        const viewTitleText = typeof data.market_view === 'object' ? data.market_view.title : (data.market_view || "Market Equilibrium");
+        const viewSummaryText = typeof data.market_view === 'object' ? data.market_view.summary : (data.summary_reasoning || "");
+
+        // Update Overview widget as well if visible
+        const overviewConsensus = document.getElementById("overview-consensus-status");
+        if (overviewConsensus) {
+            overviewConsensus.textContent = `${sig} (${strength.toFixed(0)}%)`;
+            overviewConsensus.className = sig === "BULLISH" ? "text-green" : 
+                                         sig === "BEARISH" ? "text-red" : 
+                                         sig === "MIXED" ? "text-yellow" : "text-blue";
+        }
+
+        // 1. Update Hero Banner
+        if (sigPill) {
+            sigPill.textContent = sig;
+            sigPill.className = `consensus-signal-pill ${sig.toLowerCase()}`;
+        }
+        if (viewTitle) viewTitle.textContent = viewTitleText;
+        if (viewSub) viewSub.textContent = viewSummaryText;
+        if (strengthVal) strengthVal.textContent = `${strength.toFixed(1)}%`;
+        if (agreementVal) agreementVal.textContent = `${agreement.toFixed(1)}%`;
+        if (agreementLevel) {
+            agreementLevel.textContent = data.agreement_level || "MEDIUM";
+            agreementLevel.className = `consensus-metric-val ${data.agreement_level === 'HIGH' ? 'text-green' : data.agreement_level === 'LOW' ? 'text-red' : 'text-yellow'}`;
+        }
+
+        // 2. Update Force Bars from tallies
+        const bullVotes = (data.agent_tally?.BULLISH || 0) + (data.strategy_tally?.BULLISH || 0);
+        const neutVotes = (data.agent_tally?.NEUTRAL || 0) + (data.strategy_tally?.NEUTRAL || 0);
+        const bearVotes = (data.agent_tally?.BEARISH || 0) + (data.strategy_tally?.BEARISH || 0);
+        const totVotes = bullVotes + neutVotes + bearVotes || 1;
+        const pBull = ((bullVotes / totVotes) * 100).toFixed(1);
+        const pNeut = ((neutVotes / totVotes) * 100).toFixed(1);
+        const pBear = ((bearVotes / totVotes) * 100).toFixed(1);
+
+        if (bullForceLbl) bullForceLbl.innerHTML = `<i class="fa-solid fa-arrow-up"></i> Bullish ${pBull}% (${bullVotes})`;
+        if (neutForceLbl) neutForceLbl.textContent = `Neutral ${pNeut}% (${neutVotes})`;
+        if (bearForceLbl) bearForceLbl.innerHTML = `Bearish ${pBear}% (${bearVotes}) <i class="fa-solid fa-arrow-down"></i>`;
+
+        if (barBull) barBull.style.width = `${pBull}%`;
+        if (barNeut) barNeut.style.width = `${pNeut}%`;
+        if (barBear) barBear.style.width = `${pBear}%`;
+
+        // 3. Update Tally Strip
+        const totalEvaluated = data.total_evidence_evaluated ?? data.contributing_count ?? totVotes;
+        if (tallyEl) {
+            tallyEl.innerHTML = `<strong>${totalEvaluated}</strong> Total Sources &bull; ` +
+                `<span class="text-green">${bullVotes} Bullish</span> &bull; ` +
+                `<span class="text-3">${neutVotes} Neutral</span> &bull; ` +
+                `<span class="text-red">${bearVotes} Bearish</span> &bull; ` +
+                `Status: <strong>${data.status}</strong>`;
+        }
+
+        // 4. Render Evidence Sections
+        if (body) {
+            let html = "";
+
+            // A. Conflicting Evidence (if any)
+            if (Array.isArray(data.conflicting_evidence) && data.conflicting_evidence.length > 0) {
+                html += `
+                    <div class="consensus-section-header" style="color:#facc15;">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        <span>Conflicting Evidence (${data.conflicting_evidence.length})</span>
+                    </div>
+                    <div class="evidence-grid">
+                        ${data.conflicting_evidence.map(e => renderEvidenceCard(e, "conflict")).join("")}
+                    </div>
+                `;
+            }
+
+            // B. Supporting Evidence
+            if (Array.isArray(data.supporting_evidence) && data.supporting_evidence.length > 0) {
+                html += `
+                    <div class="consensus-section-header" style="color:var(--pos);">
+                        <i class="fa-solid fa-shield-check"></i>
+                        <span>Primary Supporting Evidence (${data.supporting_evidence.length})</span>
+                    </div>
+                    <div class="evidence-grid">
+                        ${data.supporting_evidence.map(e => renderEvidenceCard(e, "supporting")).join("")}
+                    </div>
+                `;
+            }
+
+            // C. Ignored / Failed Evidence (if any)
+            if (Array.isArray(data.ignored_evidence) && data.ignored_evidence.length > 0) {
+                html += `
+                    <div class="consensus-section-header" style="color:var(--text-4);margin-top:12px;">
+                        <i class="fa-solid fa-ban"></i>
+                        <span>Ignored / Inactive Signals (${data.ignored_evidence.length})</span>
+                    </div>
+                    <div class="evidence-grid">
+                        ${data.ignored_evidence.map(e => `
+                            <div class="evidence-card failed">
+                                <div class="evidence-card-header">
+                                    <div class="evidence-source-info">
+                                        <span class="evidence-type-badge">${esc(e.type || "UNKNOWN")}</span>
+                                        <span class="evidence-source-name">${esc(e.id || "Source")}</span>
+                                    </div>
+                                    <span class="strat-eval-badge strat-badge-neutral">${esc(e.reason || "SKIPPED")}</span>
+                                </div>
+                                <div class="evidence-card-reason">${esc(e.detail || "Source omitted from voting.")}</div>
+                            </div>
+                        `).join("")}
+                    </div>
+                `;
+            }
+
+            body.innerHTML = html;
+        }
+
+    } catch (err) {
+        if (tallyEl) tallyEl.innerHTML = `<span class="status-dot red-glow"></span> Error: ${esc(err.message)}`;
+        if (body) body.innerHTML = `<div style="padding:24px;text-align:center;color:var(--neg);font-size:12px;">Error connecting to Consensus Engine: ${esc(err.message)}</div>`;
+    }
+}
+window.refreshConsensusModal = refreshConsensusModal;
+
+function renderEvidenceCard(e, modifier) {
+    const cardClass = modifier === "conflict" ? "evidence-card conflict" :
+                      modifier === "supporting" ? "evidence-card supporting" :
+                      modifier === "failed" ? "evidence-card failed" : "evidence-card";
+
+    const badgeClass = e.signal === "BULLISH" ? "strat-eval-badge strat-badge-bullish" :
+                       e.signal === "BEARISH" ? "strat-eval-badge strat-badge-bearish" : "strat-eval-badge strat-badge-neutral";
+
+    const srcType = e.evidence_type || e.source_type || "SOURCE";
+    const reasonText = e.summary || e.reasoning || "Analysis criteria evaluated.";
+
+    return `
+        <div class="${cardClass}">
+            <div class="evidence-card-header">
+                <div class="evidence-source-info">
+                    <span class="evidence-type-badge">${esc(srcType)}</span>
+                    <span class="evidence-source-name">${esc(e.source_name)}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span class="${badgeClass}">${esc(e.signal)}</span>
+                    <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-3);">${(e.confidence || 0).toFixed(0)}%</span>
+                </div>
+            </div>
+            <div class="evidence-card-reason">${esc(reasonText)}</div>
+        </div>
+    `;
+}
+
+// -------------------------------------------------------------
+//   PHASE 6: ORBIT BRAIN CENTRAL INTELLIGENCE MODAL
+// -------------------------------------------------------------
+
+function openBrainModal() {
+    const modal = document.getElementById("brain-inspect-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("brain-modal-subtitle");
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+    if (sub) sub.textContent = `Central Intelligence Orchestration Dossier on ${asset} (${tf})`;
+    refreshBrainModal();
+}
+window.openBrainModal = openBrainModal;
+
+function closeBrainModal() {
+    const modal = document.getElementById("brain-inspect-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeBrainModal = closeBrainModal;
+
+async function refreshBrainModal() {
+    const sub = document.getElementById("brain-modal-subtitle");
+    const statusTag = document.getElementById("brain-status-tag");
+    const biasPill = document.getElementById("brain-bias-pill");
+    const convictionPill = document.getElementById("brain-conviction-pill");
+    const tierPill = document.getElementById("brain-tier-pill");
+    const execText = document.getElementById("brain-exec-summary-text");
+
+    // Market Overview
+    const mktPrice = document.getElementById("brain-mkt-price");
+    const mktChange = document.getElementById("brain-mkt-change");
+    const mktAtr = document.getElementById("brain-mkt-atr");
+    const mktRegime = document.getElementById("brain-mkt-regime");
+
+    // Agent Summary
+    const agentLeading = document.getElementById("brain-agent-leading");
+    const agentBull = document.getElementById("brain-agent-bull");
+    const agentNeut = document.getElementById("brain-agent-neut");
+    const agentBear = document.getElementById("brain-agent-bear");
+    const agentConf = document.getElementById("brain-agent-conf");
+
+    // Strategy Summary
+    const stratSetupsTag = document.getElementById("brain-strat-setups-tag");
+    const stratActiveCount = document.getElementById("brain-strat-active-count");
+    const stratBull = document.getElementById("brain-strat-bull");
+    const stratBear = document.getElementById("brain-strat-bear");
+    const stratActiveList = document.getElementById("brain-strat-active-list");
+
+    // Consensus Summary
+    const consStatusTag = document.getElementById("brain-cons-status-tag");
+    const consSig = document.getElementById("brain-cons-sig");
+    const consStrength = document.getElementById("brain-cons-strength");
+    const consAgree = document.getElementById("brain-cons-agree");
+    const consMarketView = document.getElementById("brain-market-view-line");
+
+    // Evidence & Diagnostics
+    const evidenceSection = document.getElementById("brain-evidence-section");
+    const diagLatency = document.getElementById("brain-diag-latency");
+    const diagComp = document.getElementById("brain-diag-comp");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Central Intelligence Orchestration Dossier on ${asset} (${tf})`;
+    if (execText) execText.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Orchestrating multi-system intelligence across market data, 7 AI agents, 12 strategies, and consensus...`;
+
+    try {
+        const res = await fetch(`/api/brain/analyze?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (execText) execText.innerHTML = `<span style="color:var(--neg);">Analysis failed: ${esc(json.detail || "Server error")}</span>`;
+            if (statusTag) {
+                statusTag.textContent = "FAILED";
+                statusTag.style.color = "var(--neg)";
+            }
+            return;
+        }
+
+        const data = json.data;
+
+        // 1. Executive Banner
+        if (statusTag) {
+            statusTag.textContent = data.analysis_status || "READY";
+            statusTag.style.color = data.analysis_status === "READY" ? "var(--pos)" : 
+                                    data.analysis_status === "PARTIAL" ? "#facc15" : "var(--neg)";
+        }
+        if (biasPill) {
+            const b = data.overall_bias || "NEUTRAL";
+            biasPill.textContent = b;
+            biasPill.className = `consensus-signal-pill ${b.toLowerCase()}`;
+        }
+        if (convictionPill) {
+            convictionPill.textContent = `Conviction: ${(data.conviction_strength || 0).toFixed(1)}%`;
+        }
+        if (tierPill) {
+            tierPill.textContent = `${data.completeness_tier} (${(data.completeness_score || 0).toFixed(0)}%)`;
+            tierPill.style.color = data.completeness_tier === "COMPLETE" ? "var(--pos)" : 
+                                   data.completeness_tier === "PARTIAL" ? "#facc15" : "var(--neg)";
+        }
+        if (execText) {
+            execText.textContent = data.executive_summary || "Complete market analysis synthesized.";
+        }
+
+        // 2. Market Overview Card
+        const mkt = data.market_summary || {};
+        if (mktPrice) mktPrice.textContent = `$${(mkt.current_price || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        if (mktChange) {
+            const chgPct = (mkt.price_change_pct || 0);
+            const sign = chgPct >= 0 ? "+" : "";
+            mktChange.textContent = `${sign}${chgPct.toFixed(2)}%`;
+            mktChange.className = chgPct >= 0 ? "brain-sub-val text-green" : "brain-sub-val text-red";
+        }
+        if (mktAtr) mktAtr.textContent = `${(mkt.volatility_atr || 0).toFixed(2)} (${(mkt.volatility_pct || 0).toFixed(2)}%)`;
+        if (mktRegime) mktRegime.textContent = mkt.trend_regime || "REGIME";
+
+        // 3. AI Agent Summary Card
+        const ag = data.agent_summary || {};
+        const agTally = ag.tally || {};
+        if (agentLeading) agentLeading.textContent = ag.leading_signal || "NEUTRAL";
+        if (agentBull) agentBull.textContent = agTally.BULLISH || 0;
+        if (agentNeut) agentNeut.textContent = agTally.NEUTRAL || 0;
+        if (agentBear) agentBear.textContent = agTally.BEARISH || 0;
+        if (agentConf) agentConf.textContent = `${(ag.average_confidence || 0).toFixed(0)}%`;
+
+        // 4. Strategy Setup Card
+        const st = data.strategy_summary || {};
+        const stTally = st.tally || {};
+        if (stratSetupsTag) stratSetupsTag.textContent = `${st.setups_found || 0} SETUPS`;
+        if (stratActiveCount) stratActiveCount.textContent = `${st.setups_found || 0} / ${st.strategies_evaluated || 12}`;
+        if (stratBull) stratBull.textContent = st.bullish_setups || 0;
+        if (stratBear) stratBear.textContent = st.bearish_setups || 0;
+        if (stratActiveList) {
+            if (Array.isArray(st.active_strategies) && st.active_strategies.length > 0) {
+                stratActiveList.innerHTML = st.active_strategies.map(name => 
+                    `<span class="strat-eval-badge strat-badge-bullish" style="font-size:9.5px;">✓ ${esc(name)}</span>`
+                ).join("");
+            } else {
+                stratActiveList.innerHTML = `<span style="font-size:10.5px;color:var(--text-4);font-style:italic;">No active strategy setups detected</span>`;
+            }
+        }
+
+        // 5. Consensus Synthesis Card
+        const cs = data.consensus_summary || {};
+        if (consStatusTag) consStatusTag.textContent = cs.status || "READY";
+        if (consSig) {
+            consSig.textContent = cs.signal || "NEUTRAL";
+            consSig.className = cs.signal === "BULLISH" ? "brain-sub-val text-green" :
+                                cs.signal === "BEARISH" ? "brain-sub-val text-red" :
+                                cs.signal === "MIXED" ? "brain-sub-val text-yellow" : "brain-sub-val text-blue";
+        }
+        if (consStrength) consStrength.textContent = `${(cs.strength || 0).toFixed(1)}%`;
+        if (consAgree) consAgree.textContent = `${(cs.agreement_score || 0).toFixed(0)}% (${cs.agreement_level || "MED"})`;
+        if (consMarketView) consMarketView.textContent = cs.market_view || "Market Equilibrium";
+
+        // 6. Evidence Extraction
+        if (evidenceSection) {
+            let html = "";
+            const sup = data.key_supporting_evidence || [];
+            const conf = data.key_conflicting_evidence || [];
+
+            if (conf.length > 0) {
+                html += `
+                    <div class="consensus-section-header" style="color:#facc15;">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        <span>Key Conflicting Evidence (${conf.length})</span>
+                    </div>
+                    <div class="evidence-grid">
+                        ${conf.map(e => renderEvidenceCard(e, "conflict")).join("")}
+                    </div>
+                `;
+            }
+
+            if (sup.length > 0) {
+                html += `
+                    <div class="consensus-section-header" style="color:var(--pos);margin-top:4px;">
+                        <i class="fa-solid fa-shield-check"></i>
+                        <span>Key Supporting Evidence (${sup.length})</span>
+                    </div>
+                    <div class="evidence-grid">
+                        ${sup.map(e => renderEvidenceCard(e, "supporting")).join("")}
+                    </div>
+                `;
+            }
+
+            evidenceSection.innerHTML = html;
+        }
+
+        // 7. Diagnostics
+        const diag = data.diagnostics || {};
+        if (diagLatency) diagLatency.textContent = `${(diag.total_pipeline_ms || 0).toFixed(1)} ms`;
+        if (diagComp) diagComp.textContent = `${(data.completeness_score || 0).toFixed(1)}%`;
+
+    } catch (err) {
+        if (execText) execText.innerHTML = `<span style="color:var(--neg);">Error connecting to ORBIT Brain: ${esc(err.message)}</span>`;
+    }
+}
+window.refreshBrainModal = refreshBrainModal;
+
+// -------------------------------------------------------------
+// 12. ORBIT RISK GUARD MODAL CONTROLLER (PHASE 7)
+// -------------------------------------------------------------
+
+function openRiskModal() {
+    const modal = document.getElementById("risk-guard-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("risk-modal-subtitle");
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+    if (sub) sub.textContent = `Analysis Quality & Market Safety Audit on ${asset} (${tf})`;
+    refreshRiskModal();
+}
+window.openRiskModal = openRiskModal;
+
+function closeRiskModal() {
+    const modal = document.getElementById("risk-guard-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeRiskModal = closeRiskModal;
+
+async function refreshRiskModal() {
+    const sub = document.getElementById("risk-modal-subtitle");
+    const statusTag = document.getElementById("risk-status-tag");
+    const levelPill = document.getElementById("risk-level-pill");
+    const heroTitle = document.getElementById("risk-hero-title");
+    const heroSummary = document.getElementById("risk-hero-summary");
+    const scoreNum = document.getElementById("risk-score-number");
+    const barFill = document.getElementById("risk-meter-bar-fill");
+    const dimsGrid = document.getElementById("risk-dimensions-grid");
+    const factorsList = document.getElementById("risk-factors-list");
+    const factorsCount = document.getElementById("risk-factors-count");
+    const safetyList = document.getElementById("safety-factors-list");
+    const safetyCount = document.getElementById("safety-factors-count");
+    const diagLatency = document.getElementById("risk-diag-latency");
+    const diagDims = document.getElementById("risk-diag-dims");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Analysis Quality & Market Safety Audit on ${asset} (${tf})`;
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Evaluating multi-dimensional safety vectors across volatility, conflict, consensus, quality, and data...`;
+
+    try {
+        const res = await fetch(`/api/risk/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Risk audit failed: ${esc(json.detail || "Server error")}</span>`;
+            if (statusTag) {
+                statusTag.textContent = "FAILED";
+                statusTag.style.color = "var(--neg)";
+            }
+            return;
+        }
+
+        const data = json.data;
+
+        // 1. Status tag
+        if (statusTag) {
+            statusTag.textContent = data.status || "READY";
+            statusTag.style.color = data.status === "READY" ? "var(--pos)" : 
+                                    data.status === "PARTIAL" ? "#facc15" : "var(--neg)";
+        }
+
+        // 2. Risk Level Pill & Hero Title
+        const lvl = data.risk_level || "MODERATE";
+        if (levelPill) {
+            levelPill.textContent = lvl;
+            levelPill.className = `risk-level-pill ${lvl.toLowerCase()}`;
+        }
+        if (heroTitle) {
+            heroTitle.textContent = lvl === "LOW" ? "Controlled Risk Profile" :
+                                    lvl === "MODERATE" ? "Standard Market Volatility" :
+                                    lvl === "HIGH" ? "Elevated Risk Warning" : "CRITICAL RISK ALERT";
+        }
+        if (heroSummary) {
+            heroSummary.textContent = data.summary || "Risk assessment completed.";
+        }
+
+        // 3. Score Number & Meter Bar
+        const score = data.risk_score || 0;
+        if (scoreNum) {
+            scoreNum.innerHTML = `${score.toFixed(1)}<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+        }
+        if (barFill) {
+            barFill.style.width = `${Math.min(100, Math.max(5, score))}%`;
+            barFill.style.background = lvl === "LOW" ? "var(--pos)" :
+                                       lvl === "MODERATE" ? "#F59E0B" :
+                                       lvl === "HIGH" ? "#F97316" : "var(--neg)";
+        }
+
+        // 4. 5-Dimension Evaluation Grid
+        if (dimsGrid && data.dimensions) {
+            const dims = data.dimensions;
+            const dimKeys = ["volatility", "signal_conflict", "consensus", "analysis_quality", "data_quality"];
+            const dimIcons = {
+                volatility: "fa-solid fa-wave-square",
+                signal_conflict: "fa-solid fa-code-compare",
+                consensus: "fa-solid fa-brain",
+                analysis_quality: "fa-solid fa-shield-halved",
+                data_quality: "fa-solid fa-database"
+            };
+
+            dimsGrid.innerHTML = dimKeys.map(key => {
+                const d = dims[key];
+                if (!d) return "";
+                const dLvl = d.level || "MODERATE";
+                const lvlColor = dLvl === "LOW" ? "var(--pos)" :
+                                 dLvl === "MODERATE" ? "#F59E0B" :
+                                 dLvl === "HIGH" ? "#F97316" : "var(--neg)";
+                const icon = dimIcons[key] || "fa-solid fa-cubes";
+                return `
+                    <div class="risk-dim-card">
+                        <div class="risk-dim-header">
+                            <div class="risk-dim-title">
+                                <i class="${icon}" style="color:${lvlColor};"></i>
+                                <span>${esc(d.name)}</span>
+                            </div>
+                            <span class="risk-dim-score" style="color:${lvlColor};">${(d.score || 0).toFixed(0)}/100</span>
+                        </div>
+                        <div class="risk-dim-summary">${esc(d.summary)}</div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        // 5. Risk Factors (Warnings)
+        const rfList = data.risk_factors || [];
+        if (factorsCount) factorsCount.textContent = rfList.length;
+        if (factorsList) {
+            if (rfList.length === 0) {
+                factorsList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">✓ No active elevated risk warnings detected in current state.</div>`;
+            } else {
+                factorsList.innerHTML = rfList.map(rf => `
+                    <div class="risk-factor-item">
+                        <div class="risk-factor-title">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span>${esc(rf.title)}</span>
+                        </div>
+                        <div class="risk-factor-detail">${esc(rf.detail)}</div>
+                    </div>
+                `).join("");
+            }
+        }
+
+        // 6. Stabilizing Safety Factors
+        const sfList = data.safety_factors || [];
+        if (safetyCount) safetyCount.textContent = sfList.length;
+        if (safetyList) {
+            if (sfList.length === 0) {
+                safetyList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No specific stabilizing conditions identified.</div>`;
+            } else {
+                safetyList.innerHTML = sfList.map(sf => `
+                    <div class="safety-factor-item">
+                        <div class="safety-factor-title">
+                            <i class="fa-solid fa-circle-check"></i>
+                            <span>${esc(sf.title)}</span>
+                        </div>
+                        <div class="safety-factor-detail">${esc(sf.detail)}</div>
+                    </div>
+                `).join("");
+            }
+        }
+
+        // 7. Diagnostics
+        const diag = data.diagnostics || {};
+        if (diagLatency) diagLatency.textContent = `${(diag.evaluation_latency_ms || 0).toFixed(1)} ms`;
+        if (diagDims) diagDims.textContent = `${diag.dimensions_evaluated || 5}/5`;
+
+    } catch (err) {
+        if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Error connecting to Risk Guard: ${esc(err.message)}</span>`;
+    }
+}
+window.refreshRiskModal = refreshRiskModal;
+
+// -------------------------------------------------------------
+// 13. ORBIT OPPORTUNITY EVALUATION ENGINE MODAL CONTROLLER (PHASE 8)
+// -------------------------------------------------------------
+
+function openOpportunityModal() {
+    const modal = document.getElementById("opportunity-eval-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("opp-modal-subtitle");
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+    if (sub) sub.textContent = `Multi-System Confluence & Setup Quality Assessment on ${asset} (${tf})`;
+    refreshOpportunityModal();
+}
+window.openOpportunityModal = openOpportunityModal;
+
+function closeOpportunityModal() {
+    const modal = document.getElementById("opportunity-eval-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeOpportunityModal = closeOpportunityModal;
+
+async function refreshOpportunityModal() {
+    const sub = document.getElementById("opp-modal-subtitle");
+    const statusTag = document.getElementById("opp-status-tag");
+    const levelPill = document.getElementById("opp-level-pill");
+    const biasPill = document.getElementById("opp-bias-pill");
+    const heroTitle = document.getElementById("opp-hero-title");
+    const heroSummary = document.getElementById("opp-hero-summary");
+    const scoreNum = document.getElementById("opp-score-number");
+    const barFill = document.getElementById("opp-meter-bar-fill");
+    const dimsGrid = document.getElementById("opp-dimensions-grid");
+    const strengthList = document.getElementById("opp-strength-list");
+    const strengthCount = document.getElementById("opp-strength-count");
+    const weaknessList = document.getElementById("opp-weakness-list");
+    const weaknessCount = document.getElementById("opp-weakness-count");
+    const diagLatency = document.getElementById("opp-diag-latency");
+    const diagTotal = document.getElementById("opp-diag-total");
+    const diagDims = document.getElementById("opp-diag-dims");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Multi-System Confluence & Setup Quality Assessment on ${asset} (${tf})`;
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Evaluating cross-pipeline confluence across consensus, strategies, agents, risk headroom, and data completeness...`;
+
+    try {
+        const res = await fetch(`/api/opportunity/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Opportunity evaluation failed: ${esc(json.detail || "Server error")}</span>`;
+            if (statusTag) {
+                statusTag.textContent = "FAILED";
+                statusTag.style.color = "var(--neg)";
+            }
+            if (levelPill) {
+                levelPill.textContent = "VERY_LOW";
+                levelPill.className = "opp-level-pill very-low";
+            }
+            if (scoreNum) {
+                scoreNum.innerHTML = `0.0<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+            }
+            return;
+        }
+
+        const data = json.data;
+
+        // 1. Status tag
+        if (statusTag) {
+            statusTag.textContent = data.status || "READY";
+            statusTag.style.color = data.status === "READY" ? "var(--pos)" :
+                                    data.status === "PARTIAL" ? "#facc15" :
+                                    data.status === "LIMITED" ? "#f97316" : "var(--neg)";
+        }
+
+        // 2. Opportunity Level & Bias Pills
+        const lvl = data.opportunity_level || "MODERATE";
+        const lvlNormalized = lvl.toLowerCase().replace("_", "-");
+        if (levelPill) {
+            levelPill.textContent = lvl.replace("_", " ");
+            levelPill.className = `opp-level-pill ${lvlNormalized}`;
+        }
+
+        const bias = data.directional_bias || "NEUTRAL";
+        if (biasPill) {
+            biasPill.textContent = bias;
+            biasPill.className = `opp-bias-pill ${bias.toLowerCase()}`;
+        }
+
+        // Hero Title & Summary
+        if (heroTitle) {
+            heroTitle.textContent = lvl === "VERY_HIGH" ? "Exceptional Multi-System Confluence" :
+                                    lvl === "HIGH" ? "Strong Analytical Confluence" :
+                                    lvl === "MODERATE" ? "Balanced Setup Quality" :
+                                    lvl === "LOW" ? "Weak Confluence / High Friction" :
+                                    "Minimal Trade Setup Opportunity";
+        }
+        if (heroSummary) {
+            heroSummary.textContent = data.summary || "Opportunity confluence evaluated across ORBIT intelligence stack.";
+        }
+
+        // 3. Score Number & Meter Bar
+        const score = data.opportunity_score || 0;
+        if (scoreNum) {
+            scoreNum.innerHTML = `${score.toFixed(1)}<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+        }
+        if (barFill) {
+            barFill.style.width = `${Math.min(100, Math.max(5, score))}%`;
+            barFill.style.background = (lvl === "VERY_HIGH" || lvl === "HIGH") ? "var(--pos)" :
+                                       lvl === "MODERATE" ? "#F59E0B" :
+                                       lvl === "LOW" ? "#F97316" : "var(--neg)";
+        }
+
+        // 4. 5-Dimension Opportunity Grid
+        if (dimsGrid && data.dimensions) {
+            const dims = data.dimensions;
+            const dimKeys = ["consensus_quality", "strategy_confluence", "agent_harmony", "risk_headroom", "analysis_completeness"];
+            const dimIcons = {
+                consensus_quality: "fa-solid fa-brain",
+                strategy_confluence: "fa-solid fa-layer-group",
+                agent_harmony: "fa-solid fa-robot",
+                risk_headroom: "fa-solid fa-shield-halved",
+                analysis_completeness: "fa-solid fa-circle-check"
+            };
+
+            dimsGrid.innerHTML = dimKeys.map(key => {
+                const d = dims[key];
+                if (!d) return "";
+                const dScore = d.score || 0;
+                const dColor = dScore >= 70 ? "var(--pos)" :
+                               dScore >= 50 ? "#06b6d4" :
+                               dScore >= 35 ? "#F59E0B" : "var(--neg)";
+                const icon = dimIcons[key] || "fa-solid fa-cubes";
+                return `
+                    <div class="opp-dim-card">
+                        <div class="opp-dim-header">
+                            <div class="opp-dim-title">
+                                <i class="${icon}" style="color:${dColor};"></i>
+                                <span>${esc(d.name)}</span>
+                            </div>
+                            <span class="opp-dim-score" style="color:${dColor};">${dScore.toFixed(0)}/100</span>
+                        </div>
+                        <div class="opp-dim-summary">${esc(d.summary)}</div>
+                    </div>
+                `;
+            }).join("");
+        }
+
+        // 5. Confluence Boosters (Strengths)
+        const stList = data.strength_factors || [];
+        if (strengthCount) strengthCount.textContent = stList.length;
+        if (strengthList) {
+            if (stList.length === 0) {
+                strengthList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No strong confluence boosters detected in current market state.</div>`;
+            } else {
+                strengthList.innerHTML = stList.map(st => `
+                    <div class="opp-factor-item booster">
+                        <div class="opp-factor-title booster">
+                            <i class="fa-solid fa-circle-check"></i>
+                            <span>${esc(st.title)}</span>
+                        </div>
+                        <div class="opp-factor-detail">${esc(st.detail)}</div>
+                    </div>
+                `).join("");
+            }
+        }
+
+        // 6. Opportunity Headwinds (Weaknesses)
+        const wkList = data.weakness_factors || [];
+        if (weaknessCount) weaknessCount.textContent = wkList.length;
+        if (weaknessList) {
+            if (wkList.length === 0) {
+                weaknessList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">✓ Zero significant headwinds or frictions identified.</div>`;
+            } else {
+                weaknessList.innerHTML = wkList.map(wk => `
+                    <div class="opp-factor-item headwind">
+                        <div class="opp-factor-title headwind">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                            <span>${esc(wk.title)}</span>
+                        </div>
+                        <div class="opp-factor-detail">${esc(wk.detail)}</div>
+                    </div>
+                `).join("");
+            }
+        }
+
+        // 7. Diagnostics Strip
+        const diag = data.diagnostics || {};
+        if (diagLatency) diagLatency.textContent = `${(diag.evaluation_latency_ms || 0).toFixed(2)} ms`;
+        if (diagTotal) diagTotal.textContent = `${(diag.total_pipeline_ms || 0).toFixed(1)} ms`;
+        if (diagDims) diagDims.textContent = `${diag.dimensions_evaluated || 5}/5`;
+
+    } catch (err) {
+        if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Error connecting to Opportunity Engine: ${esc(err.message)}</span>`;
+    }
+}
+window.refreshOpportunityModal = refreshOpportunityModal;
+
+// -------------------------------------------------------------
+// 14. ORBIT DECISION ENGINE MODAL CONTROLLER (PHASE 9)
+// -------------------------------------------------------------
+
+function openDecisionModal() {
+    const modal = document.getElementById("decision-eval-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("decision-modal-subtitle");
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+    if (sub) sub.textContent = `Evidence-Based Analytical Market Stance Synthesis on ${asset} (${tf})`;
+    refreshDecisionModal();
+}
+window.openDecisionModal = openDecisionModal;
+
+function closeDecisionModal() {
+    const modal = document.getElementById("decision-eval-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeDecisionModal = closeDecisionModal;
+
+async function refreshDecisionModal() {
+    const sub = document.getElementById("decision-modal-subtitle");
+    const statusTag = document.getElementById("decision-status-tag");
+    const stanceBadge = document.getElementById("decision-stance-badge");
+    const clarityTag = document.getElementById("decision-clarity-tag");
+    const heroTitle = document.getElementById("decision-hero-title");
+    const heroSummary = document.getElementById("decision-hero-summary");
+    const confNum = document.getElementById("decision-confidence-number");
+    const barFill = document.getElementById("decision-meter-bar-fill");
+
+    const inConsensus = document.getElementById("dec-in-consensus");
+    const inConsensusSub = document.getElementById("dec-in-consensus-sub");
+    const inRisk = document.getElementById("dec-in-risk");
+    const inRiskSub = document.getElementById("dec-in-risk-sub");
+    const inOpp = document.getElementById("dec-in-opp");
+    const inOppSub = document.getElementById("dec-in-opp-sub");
+    const inPipeline = document.getElementById("dec-in-pipeline");
+    const inPipelineSub = document.getElementById("dec-in-pipeline-sub");
+
+    const evidenceList = document.getElementById("decision-evidence-list");
+    const evidenceCount = document.getElementById("decision-evidence-count");
+    const constraintsList = document.getElementById("decision-constraints-list");
+    const constraintsCount = document.getElementById("decision-constraints-count");
+
+    const diagLatency = document.getElementById("dec-diag-latency");
+    const diagTotal = document.getElementById("dec-diag-total");
+    const diagClarity = document.getElementById("dec-diag-clarity");
+
+    const asset = currentAsset || "BTC-USD";
+    const tf = currentTimeframe || "1d";
+
+    if (sub) sub.textContent = `Evidence-Based Analytical Market Stance Synthesis on ${asset} (${tf})`;
+    if (heroSummary) heroSummary.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Synthesizing market stance across consensus direction, opportunity setup quality, and risk constraints...`;
+
+    try {
+        const res = await fetch(`/api/decision/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Decision synthesis failed: ${esc(json.detail || "Server error")}</span>`;
+            if (statusTag) {
+                statusTag.textContent = "FAILED";
+                statusTag.style.color = "var(--neg)";
+            }
+            if (stanceBadge) {
+                stanceBadge.textContent = "INSUFFICIENT DATA";
+                stanceBadge.className = "decision-stance-badge insufficient-data";
+            }
+            if (clarityTag) {
+                clarityTag.textContent = "INSUFFICIENT";
+            }
+            if (confNum) {
+                confNum.innerHTML = `0.0<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+            }
+            return;
+        }
+
+        const data = json.data;
+
+        // 1. Status tag
+        if (statusTag) {
+            statusTag.textContent = data.status || "READY";
+            statusTag.style.color = data.status === "READY" ? "var(--pos)" :
+                                    data.status === "PARTIAL" ? "#facc15" :
+                                    data.status === "LIMITED" ? "#f97316" : "var(--neg)";
+        }
+
+        // 2. Stance Badge & Clarity Tag
+        const stance = data.decision || "NEUTRAL";
+        const stanceNormalized = stance.toLowerCase().replace(/_/g, "-");
+        if (stanceBadge) {
+            stanceBadge.textContent = stance.replace(/_/g, " ");
+            stanceBadge.className = `decision-stance-badge ${stanceNormalized}`;
+        }
+
+        const clarity = data.decision_clarity || "MODERATE";
+        if (clarityTag) {
+            clarityTag.textContent = clarity;
+            clarityTag.style.color = clarity === "CLEAR" ? "var(--pos)" :
+                                     clarity === "MODERATE" ? "#38bdf8" :
+                                     clarity === "UNCLEAR" ? "#f59e0b" : "var(--neg)";
+        }
+
+        // 3. Hero Title & Summary
+        if (heroTitle) {
+            heroTitle.textContent = stance === "BULLISH" ? "Authoritative Bullish Market Stance" :
+                                    stance === "BEARISH" ? "Authoritative Bearish Market Stance" :
+                                    stance === "NEUTRAL" ? "Consolidation Equilibrium (Neutral)" :
+                                    stance === "MIXED" ? "Polar Volatility Deadlock (Mixed)" :
+                                    stance === "NO_CLEAR_DECISION" ? "Ambiguous Evidence (No Clear Stance)" :
+                                    "Insufficient Market Intelligence";
+        }
+        if (heroSummary) {
+            heroSummary.textContent = data.summary || "Market stance synthesized across ORBIT intelligence stack.";
+        }
+
+        // 4. Evidence Confidence Number & Meter Bar
+        const conf = data.decision_confidence || 0;
+        if (confNum) {
+            confNum.innerHTML = `${conf.toFixed(1)}<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+        }
+        if (barFill) {
+            barFill.style.width = `${Math.min(100, Math.max(5, conf))}%`;
+            barFill.style.background = (stance === "BULLISH") ? "var(--pos)" :
+                                       (stance === "BEARISH") ? "var(--neg)" :
+                                       (stance === "NEUTRAL") ? "#F59E0B" : "#A855F7";
+        }
+
+        // 5. Input Summary Quad Card Grid
+        const inSum = data.input_summary || {};
+        if (inConsensus) inConsensus.textContent = inSum.consensus_signal || "--";
+        if (inConsensusSub) inConsensusSub.textContent = `Strength: ${(inSum.consensus_strength || 0).toFixed(0)} | Agreement: ${(inSum.agreement_score || 0).toFixed(0)}%`;
+
+        if (inRisk) inRisk.textContent = inSum.risk_level || "--";
+        if (inRiskSub) inRiskSub.textContent = `Score: ${(inSum.risk_score || 0).toFixed(1)}/100`;
+
+        if (inOpp) inOpp.textContent = (inSum.opportunity_level || "--").replace("_", " ");
+        if (inOppSub) inOppSub.textContent = `Confluence: ${(inSum.opportunity_score || 0).toFixed(1)}/100`;
+
+        if (inPipeline) inPipeline.textContent = `${(inSum.completeness_score || 0).toFixed(0)}%`;
+        if (inPipelineSub) inPipelineSub.textContent = `Tier: ${inSum.completeness_tier || "--"}`;
+
+        // 6. Primary & Supporting Evidence List
+        const peList = data.primary_evidence || [];
+        const seList = data.supporting_evidence || [];
+        const totalEvidence = peList.length + seList.length;
+        if (evidenceCount) evidenceCount.textContent = totalEvidence;
+        if (evidenceList) {
+            if (totalEvidence === 0) {
+                evidenceList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No active evidence items detected.</div>`;
+            } else {
+                const peHtml = peList.map(e => `
+                    <div class="decision-evidence-card">
+                        <i class="fa-solid fa-circle-check text-green" style="margin-top:2px;"></i>
+                        <span><strong>Primary:</strong> ${esc(e)}</span>
+                    </div>
+                `).join("");
+                const seHtml = seList.map(e => `
+                    <div class="decision-evidence-card" style="border-left-color:var(--cyan);background:rgba(6,182,212,0.04);">
+                        <i class="fa-solid fa-plus text-cyan" style="margin-top:2px;"></i>
+                        <span><strong>Corroborating:</strong> ${esc(e)}</span>
+                    </div>
+                `).join("");
+                evidenceList.innerHTML = peHtml + seHtml;
+            }
+        }
+
+        // 7. Constraints, Headwinds & Conflicts List
+        const cList = data.constraints || [];
+        const fList = data.conflicts || [];
+        const totalFriction = cList.length + fList.length;
+        if (constraintsCount) constraintsCount.textContent = totalFriction;
+        if (constraintsList) {
+            if (totalFriction === 0) {
+                constraintsList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">✓ Zero active analytical constraints or conflicts detected.</div>`;
+            } else {
+                const fHtml = fList.map(f => `
+                    <div class="decision-conflict-card">
+                        <i class="fa-solid fa-triangle-exclamation text-red" style="margin-top:2px;"></i>
+                        <span><strong>Conflict:</strong> ${esc(f)}</span>
+                    </div>
+                `).join("");
+                const cHtml = cList.map(c => `
+                    <div class="decision-constraint-card">
+                        <i class="fa-solid fa-shield-halved text-yellow" style="margin-top:2px;"></i>
+                        <span><strong>Constraint:</strong> ${esc(c)}</span>
+                    </div>
+                `).join("");
+                constraintsList.innerHTML = fHtml + cHtml;
+            }
+        }
+
+        // 8. Diagnostics Strip
+        const diag = data.diagnostics || {};
+        if (diagLatency) diagLatency.textContent = `${(diag.decision_latency_ms || 0).toFixed(2)} ms`;
+        if (diagTotal) diagTotal.textContent = `${(diag.total_latency_ms || 0).toFixed(1)} ms`;
+        if (diagClarity) diagClarity.textContent = clarity;
+
+    } catch (err) {
+        if (heroSummary) heroSummary.innerHTML = `<span style="color:var(--neg);">Error connecting to Decision Engine: ${esc(err.message)}</span>`;
+    }
+}
+window.refreshDecisionModal = refreshDecisionModal;
+
+// -------------------------------------------------------------
+// 15. ORBIT EXPLAINABILITY & INSIGHT ENGINE CONTROLLER (PHASE 10)
+// -------------------------------------------------------------
+
+function openExplainModal() {
+    const modal = document.getElementById("explain-eval-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+    const sub = document.getElementById("explain-modal-subtitle");
+    const asset = (typeof currentAsset !== "undefined" && currentAsset) ? currentAsset : "BTC-USD";
+    const tf = (typeof currentTimeframe !== "undefined" && currentTimeframe) ? currentTimeframe : "1d";
+    if (sub) sub.textContent = `Institutional Explainability & Traceable Intelligence on ${asset} (${tf})`;
+    refreshExplainModal();
+}
+window.openExplainModal = openExplainModal;
+
+function closeExplainModal() {
+    const modal = document.getElementById("explain-eval-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeExplainModal = closeExplainModal;
+
+async function refreshExplainModal() {
+    const sub = document.getElementById("explain-modal-subtitle");
+    const statusTag = document.getElementById("explain-status-tag");
+    const stanceBadge = document.getElementById("explain-stance-badge");
+    const clarityTag = document.getElementById("explain-clarity-tag");
+    const heroTitle = document.getElementById("explain-hero-title");
+    const headline = document.getElementById("explain-headline");
+    const thesisList = document.getElementById("explain-thesis-list");
+    const confNum = document.getElementById("explain-confidence-number");
+    const barFill = document.getElementById("explain-meter-bar-fill");
+
+    const inConsensus = document.getElementById("exp-in-consensus");
+    const inConsensusSub = document.getElementById("exp-in-consensus-sub");
+    const inRisk = document.getElementById("exp-in-risk");
+    const inRiskSub = document.getElementById("exp-in-risk-sub");
+    const inOpp = document.getElementById("exp-in-opp");
+    const inOppSub = document.getElementById("exp-in-opp-sub");
+    const inPipeline = document.getElementById("exp-in-pipeline");
+    const inPipelineSub = document.getElementById("exp-in-pipeline-sub");
+
+    const evidenceList = document.getElementById("explain-evidence-list");
+    const evidenceCount = document.getElementById("explain-evidence-count");
+    const conflictsList = document.getElementById("explain-conflicts-list");
+    const conflictsCount = document.getElementById("explain-conflicts-count");
+    const risksList = document.getElementById("explain-risks-list");
+    const risksCount = document.getElementById("explain-risks-count");
+
+    const diagLatency = document.getElementById("exp-diag-latency");
+    const diagDecLatency = document.getElementById("exp-diag-dec-latency");
+    const diagTotal = document.getElementById("exp-diag-total");
+
+    const asset = (typeof currentAsset !== "undefined" && currentAsset) ? currentAsset : "BTC-USD";
+    const tf = (typeof currentTimeframe !== "undefined" && currentTimeframe) ? currentTimeframe : "1d";
+
+    if (sub) sub.textContent = `Institutional Explainability & Traceable Intelligence on ${asset} (${tf})`;
+    if (headline) headline.innerHTML = `<i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Synthesizing traceable insights across consensus, strategies, risk, and decision matrices...`;
+
+    try {
+        const res = await fetch(`/api/explain/evaluate?symbol=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(tf)}`);
+        const json = await res.json();
+
+        if (!json.ok || !json.data) {
+            if (headline) headline.innerHTML = `<span style="color:var(--neg);">Explainability synthesis failed: ${esc(json.detail || "Server error")}</span>`;
+            if (statusTag) {
+                statusTag.textContent = "FAILED";
+                statusTag.style.color = "var(--neg)";
+            }
+            if (stanceBadge) {
+                stanceBadge.textContent = "INSUFFICIENT DATA";
+                stanceBadge.className = "explain-stance-badge insufficient-data";
+            }
+            if (clarityTag) clarityTag.textContent = "INSUFFICIENT";
+            if (confNum) confNum.innerHTML = `0.0<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+            if (thesisList) thesisList.innerHTML = `<li>No analytical thesis could be constructed due to missing market intelligence.</li>`;
+            return;
+        }
+
+        const data = json.data;
+
+        // 1. Status tag
+        if (statusTag) {
+            statusTag.textContent = data.status || "READY";
+            statusTag.style.color = data.status === "READY" ? "#22d3ee" :
+                                    data.status === "PARTIAL" ? "#facc15" :
+                                    data.status === "LIMITED" ? "#f97316" : "var(--neg)";
+        }
+
+        // 2. Stance Badge & Clarity Tag
+        const stance = data.market_stance || "NEUTRAL";
+        const stanceNormalized = stance.toLowerCase().replace(/_/g, "-");
+        if (stanceBadge) {
+            stanceBadge.textContent = stance.replace(/_/g, " ");
+            stanceBadge.className = `explain-stance-badge ${stanceNormalized}`;
+        }
+
+        const clarity = data.decision_clarity || "MODERATE";
+        if (clarityTag) {
+            clarityTag.textContent = clarity;
+            clarityTag.style.color = clarity === "CLEAR" ? "var(--pos)" :
+                                     clarity === "MODERATE" ? "#38bdf8" :
+                                     clarity === "UNCLEAR" ? "#f59e0b" : "var(--neg)";
+        }
+
+        // 3. Hero Title & Headline
+        if (heroTitle) {
+            heroTitle.textContent = stance === "BULLISH" ? "Authoritative Bullish Explanation" :
+                                    stance === "BEARISH" ? "Authoritative Bearish Explanation" :
+                                    stance === "NEUTRAL" ? "Consolidation Equilibrium (Neutral) Explanation" :
+                                    stance === "MIXED" ? "Polar Volatility Deadlock (Mixed) Explanation" :
+                                    stance === "NO_CLEAR_DECISION" ? "Ambiguous Evidence (No Clear Stance)" :
+                                    "Insufficient Market Intelligence";
+        }
+        if (headline) {
+            headline.textContent = data.headline || "Comprehensive multi-system market insight synthesis.";
+        }
+
+        // 4. Core Analytical Thesis (Why ORBIT Reached This Conclusion)
+        if (thesisList) {
+            const whyItems = data.why || [];
+            if (whyItems.length === 0) {
+                thesisList.innerHTML = `<li>Analytical conclusion synthesized from baseline market inputs.</li>`;
+            } else {
+                thesisList.innerHTML = whyItems.map(item => `<li>${esc(item)}</li>`).join("");
+            }
+        }
+
+        // 5. Evidence Confidence Number & Meter Bar
+        const conf = data.decision_confidence || 0;
+        if (confNum) {
+            confNum.innerHTML = `${conf.toFixed(1)}<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span>`;
+        }
+        if (barFill) {
+            barFill.style.width = `${Math.min(100, Math.max(5, conf))}%`;
+            barFill.style.background = (stance === "BULLISH") ? "var(--pos)" :
+                                       (stance === "BEARISH") ? "var(--neg)" :
+                                       (stance === "NEUTRAL") ? "#F59E0B" : "#A855F7";
+        }
+
+        // 6. Ingested Intelligence Stack Snapshot (Quad Cards)
+        const inSum = data.input_summary || {};
+        if (inConsensus) inConsensus.textContent = inSum.consensus_signal || "--";
+        if (inConsensusSub) inConsensusSub.textContent = `Strength: ${(inSum.consensus_strength || 0).toFixed(0)} | Agreement: ${(inSum.agreement_score || 0).toFixed(0)}%`;
+
+        if (inRisk) inRisk.textContent = inSum.risk_level || "--";
+        if (inRiskSub) inRiskSub.textContent = `Score: ${(inSum.risk_score || 0).toFixed(1)}/100`;
+
+        if (inOpp) inOpp.textContent = (inSum.opportunity_level || "--").replace("_", " ");
+        if (inOppSub) inOppSub.textContent = `Confluence: ${(inSum.opportunity_score || 0).toFixed(1)}/100`;
+
+        if (inPipeline) inPipeline.textContent = `${(inSum.completeness_score || 0).toFixed(0)}%`;
+        if (inPipelineSub) inPipelineSub.textContent = `Tier: ${inSum.completeness_tier || "--"}`;
+
+        // 7. Column 1: Traceable Supporting Evidence (Primary + Supporting)
+        const peList = data.primary_evidence || [];
+        const seList = data.supporting_evidence || [];
+        const allEvidence = [...peList, ...seList];
+        if (evidenceCount) evidenceCount.textContent = allEvidence.length;
+        if (evidenceList) {
+            if (allEvidence.length === 0) {
+                evidenceList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">No corroborating evidence items detected.</div>`;
+            } else {
+                evidenceList.innerHTML = allEvidence.map(item => {
+                    const isPrimary = peList.includes(item);
+                    const sourceClean = (item.source || "UNKNOWN").replace(/_/g, " ");
+                    const catClean = (item.category || "").replace(/_/g, " ");
+                    const icon = isPrimary ? "fa-circle-check text-green" : "fa-plus text-cyan";
+                    const borderColor = isPrimary ? "var(--pos)" : "var(--cyan)";
+                    const bgTint = isPrimary ? "rgba(0, 230, 138, 0.04)" : "rgba(6, 182, 212, 0.04)";
+
+                    return `
+                        <div class="explain-evidence-card" style="border-left-color:${borderColor};background:${bgTint};">
+                            <div class="explain-evidence-card-header">
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <i class="fa-solid ${icon}"></i>
+                                    <span style="font-weight:700;font-size:10px;text-transform:uppercase;color:var(--text-1);">${isPrimary ? "PRIMARY EVIDENCE" : "SUPPORTING"}</span>
+                                </div>
+                                <span class="explain-source-badge">${esc(sourceClean)}</span>
+                            </div>
+                            <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(item.message)}</div>
+                            <div style="display:flex;align-items:center;gap:8px;font-size:9.5px;color:var(--text-4);font-family:var(--font-mono);">
+                                <span>Tag: ${esc(catClean)}</span>
+                                ${item.direction ? `<span>Dir: ${esc(item.direction)}</span>` : ""}
+                            </div>
+                        </div>
+                    `;
+                }).join("");
+            }
+        }
+
+        // 8. Column 2: Model Conflicts & Clashes
+        const cList = data.conflicts || [];
+        if (conflictsCount) conflictsCount.textContent = cList.length;
+        if (conflictsList) {
+            if (cList.length === 0) {
+                conflictsList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">✓ Zero model conflicts or cross-system divergences detected. Full consensus alignment.</div>`;
+            } else {
+                conflictsList.innerHTML = cList.map(conf => {
+                    const subs = (conf.subsystems || []).map(s => `<span class="explain-source-badge" style="background:rgba(239,68,68,0.1);color:#fca5a5;border-color:rgba(239,68,68,0.3);">${esc(s.replace(/_/g, " "))}</span>`).join(" ");
+                    return `
+                        <div class="explain-conflict-card">
+                            <div class="explain-evidence-card-header">
+                                <div style="display:flex;align-items:center;gap:6px;">
+                                    <i class="fa-solid fa-triangle-exclamation text-red"></i>
+                                    <strong style="font-size:10.5px;color:#fca5a5;">${esc(conf.title || "Conflict")}</strong>
+                                </div>
+                                <span class="explain-source-badge" style="color:var(--neg);">${esc(conf.severity || "MODERATE")}</span>
+                            </div>
+                            <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(conf.description)}</div>
+                            ${subs ? `<div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:2px;">${subs}</div>` : ""}
+                        </div>
+                    `;
+                }).join("");
+            }
+        }
+
+        // 9. Column 3: Risk Constraints & Uncertainties
+        const rcList = data.risk_constraints || [];
+        const unList = data.uncertainties || [];
+        const totalRisks = rcList.length + unList.length;
+        if (risksCount) risksCount.textContent = totalRisks;
+        if (risksList) {
+            if (totalRisks === 0) {
+                risksList.innerHTML = `<div style="font-size:11px;color:var(--text-4);font-style:italic;padding:8px 0;">✓ No active risk constraints or epistemic uncertainties limiting analysis.</div>`;
+            } else {
+                const rcHtml = rcList.map(rc => `
+                    <div class="explain-uncertainty-card" style="border-left-color:#EAB308;">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <i class="fa-solid fa-shield-halved text-yellow"></i>
+                                <strong style="font-size:10.5px;color:#fde047;">Risk Constraint</strong>
+                            </div>
+                            <span class="explain-source-badge">${esc((rc.source || "RISK_GUARD").replace(/_/g, " "))}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(rc.message)}</div>
+                    </div>
+                `).join("");
+
+                const unHtml = unList.map(un => `
+                    <div class="explain-uncertainty-card" style="border-left-color:#A855F7;background:rgba(168,85,247,0.04);">
+                        <div class="explain-evidence-card-header">
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <i class="fa-solid fa-circle-question text-purple"></i>
+                                <strong style="font-size:10.5px;color:#d8b4fe;">${esc(un.category ? un.category.replace(/_/g, " ") : "Uncertainty")}</strong>
+                            </div>
+                            <span class="explain-source-badge" style="color:#d8b4fe;">${esc((un.source || "ORBIT_BRAIN").replace(/_/g, " "))}</span>
+                        </div>
+                        <div style="color:var(--text-2);font-size:11px;line-height:1.45;">${esc(un.description)}</div>
+                    </div>
+                `).join("");
+
+                risksList.innerHTML = rcHtml + unHtml;
+            }
+        }
+
+        // 10. Diagnostics Strip
+        const diag = data.diagnostics || {};
+        if (diagLatency) diagLatency.textContent = `${(diag.explain_latency_ms || 0).toFixed(2)} ms`;
+        if (diagDecLatency) diagDecLatency.textContent = `${(diag.decision_latency_ms || 0).toFixed(2)} ms`;
+        if (diagTotal) diagTotal.textContent = `${(diag.total_latency_ms || 0).toFixed(1)} ms`;
+
+    } catch (err) {
+        if (headline) headline.innerHTML = `<span style="color:var(--neg);">Error connecting to Explainability Engine: ${esc(err.message)}</span>`;
+    }
+}
+window.refreshExplainModal = refreshExplainModal;
+
+// -------------------------------------------------------------
+// 16. ORBIT AI MARKET INTELLIGENCE COPILOT CONTROLLER (PHASE 12)
+// -------------------------------------------------------------
+
+let _copilotConversationId = null;
+let _copilotIsLoading = false;
+
+function openCopilotModal() {
+    const modal = document.getElementById("orbit-copilot-modal");
+    if (!modal) return;
+    modal.classList.remove("hidden");
+
+    const asset = (typeof currentAsset !== "undefined" && currentAsset) ? currentAsset : "BTC-USD";
+    const tf = (typeof currentTimeframe !== "undefined" && currentTimeframe) ? currentTimeframe : "1d";
+
+    const badge = document.getElementById("copilot-active-symbol-badge");
+    if (badge) badge.textContent = `${asset} (${tf})`;
+
+    const welcomeSym = document.getElementById("copilot-welcome-symbol");
+    if (welcomeSym) welcomeSym.textContent = asset;
+
+    refreshCopilotContext(asset, tf);
+
+    setTimeout(() => {
+        const input = document.getElementById("copilot-chat-input");
+        if (input) input.focus();
+    }, 150);
+}
+window.openCopilotModal = openCopilotModal;
+
+function closeCopilotModal() {
+    const modal = document.getElementById("orbit-copilot-modal");
+    if (modal) modal.classList.add("hidden");
+}
+window.closeCopilotModal = closeCopilotModal;
+
+async function refreshCopilotContext(asset, tf) {
+    const symbol = asset || currentAsset || "BTC-USD";
+    const timeframe = tf || currentTimeframe || "1d";
+
+    try {
+        const res = await fetch(`/api/copilot/context?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
+        const json = await res.json();
+        if (json.ok && json.data) {
+            const d = json.data;
+            const stanceEl = document.getElementById("copilot-tel-stance");
+            if (stanceEl) {
+                stanceEl.textContent = d.market_stance;
+                stanceEl.className = `copilot-stance-tag ${(d.market_stance || "").toLowerCase().replace(/_/g, "-")}`;
+            }
+            const confEl = document.getElementById("copilot-tel-confidence");
+            if (confEl) confEl.textContent = `${(d.confidence || 0).toFixed(1)}%`;
+            const riskEl = document.getElementById("copilot-tel-risk");
+            if (riskEl) riskEl.textContent = `${d.risk_level} (${(d.risk_score || 0).toFixed(0)})`;
+            const oppEl = document.getElementById("copilot-tel-opportunity");
+            if (oppEl) oppEl.textContent = `${(d.opportunity_score || 0).toFixed(0)}/100`;
+        }
+    } catch (e) {
+        console.warn("[Copilot] Error loading context telemetry:", e);
+    }
+}
+window.refreshCopilotContext = refreshCopilotContext;
+
+function askCopilotPreset(query) {
+    const input = document.getElementById("copilot-chat-input");
+    if (input) {
+        input.value = query;
+        sendCopilotMessage();
+    }
+}
+window.askCopilotPreset = askCopilotPreset;
+
+function clearCopilotChat() {
+    _copilotConversationId = null;
+    const stream = document.getElementById("copilot-chat-stream");
+    const asset = (typeof currentAsset !== "undefined" && currentAsset) ? currentAsset : "BTC-USD";
+    if (stream) {
+        stream.innerHTML = `
+            <div class="copilot-msg-card copilot-assistant">
+                <div class="copilot-msg-header">
+                    <i class="fa-solid fa-robot text-green"></i>
+                    <strong>ORBIT Copilot</strong>
+                    <span class="copilot-msg-time">Reset</span>
+                </div>
+                <div class="copilot-msg-body">
+                    Conversation reset. I am ready to answer questions about the active analysis for <strong>${esc(asset)}</strong>.
+                </div>
+            </div>
+        `;
+    }
+}
+window.clearCopilotChat = clearCopilotChat;
+
+async function sendCopilotMessage() {
+    if (_copilotIsLoading) return;
+    const input = document.getElementById("copilot-chat-input");
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = "";
+    const stream = document.getElementById("copilot-chat-stream");
+    const asset = (typeof currentAsset !== "undefined" && currentAsset) ? currentAsset : "BTC-USD";
+    const tf = (typeof currentTimeframe !== "undefined" && currentTimeframe) ? currentTimeframe : "1d";
+
+    // 1. Append User Message Bubble
+    if (stream) {
+        const userCard = document.createElement("div");
+        userCard.className = "copilot-msg-card copilot-user";
+        userCard.innerHTML = `
+            <div class="copilot-msg-header">
+                <i class="fa-solid fa-user text-cyan"></i>
+                <strong>You</strong>
+                <span class="copilot-msg-time">${new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+            </div>
+            <div class="copilot-msg-body">${esc(text)}</div>
+        `;
+        stream.appendChild(userCard);
+
+        // 2. Append Loading Typing Indicator
+        const typingCard = document.createElement("div");
+        typingCard.className = "copilot-typing-card";
+        typingCard.id = "copilot-typing-indicator";
+        typingCard.innerHTML = `
+            <i class="fa-solid fa-circle-notch fa-spin"></i>
+            <span>ORBIT Copilot is reasoning over ${esc(asset)} analysis...</span>
+        `;
+        stream.appendChild(typingCard);
+        stream.scrollTop = stream.scrollHeight;
+    }
+
+    _copilotIsLoading = true;
+    const sendBtn = document.getElementById("copilot-send-btn");
+    if (sendBtn) sendBtn.disabled = true;
+
+    try {
+        const payload = {
+            message: text,
+            symbol: asset,
+            timeframe: tf,
+            conversation_id: _copilotConversationId,
+        };
+
+        const res = await fetch("/api/copilot/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        const json = await res.json();
+        const indicator = document.getElementById("copilot-typing-indicator");
+        if (indicator) indicator.remove();
+
+        if (json.ok && json.data) {
+            const d = json.data;
+            _copilotConversationId = d.conversation_id;
+
+            // Render Markdown-ish answer safely
+            let formattedAnswer = esc(d.answer)
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/^### (.*$)/gim, '<h3 style="margin:8px 0 4px;color:#00e68a;">$1</h3>')
+                .replace(/^- (.*$)/gim, '<li>$1</li>')
+                .replace(/\n\n/g, '<br><br>')
+                .replace(/\n/g, '<br>');
+
+            const asstCard = document.createElement("div");
+            asstCard.className = "copilot-msg-card copilot-assistant";
+            asstCard.innerHTML = `
+                <div class="copilot-msg-header">
+                    <i class="fa-solid fa-robot text-green"></i>
+                    <strong>ORBIT Copilot</strong>
+                    <span class="copilot-symbol-pill" style="font-size:9.5px;padding:1px 6px;">${esc(d.symbol)}</span>
+                    <span class="copilot-msg-time">${(d.latency_ms || 0).toFixed(0)} ms</span>
+                </div>
+                <div class="copilot-msg-body">${formattedAnswer}</div>
+            `;
+            if (stream) stream.appendChild(asstCard);
+
+            // Update suggestions if provided
+            if (d.suggested_followups && d.suggested_followups.length > 0) {
+                const chipsBox = document.getElementById("copilot-chips-container");
+                if (chipsBox) {
+                    chipsBox.innerHTML = `
+                        <span class="copilot-chips-label"><i class="fa-solid fa-lightbulb"></i> Next:</span>
+                        ${d.suggested_followups.map(s => `<button class="copilot-chip" onclick="askCopilotPreset('${esc(s)}')">${esc(s)}</button>`).join("")}
+                    `;
+                }
+            }
+        } else {
+            const errCard = document.createElement("div");
+            errCard.className = "copilot-msg-card copilot-assistant";
+            errCard.style.borderLeftColor = "var(--neg)";
+            errCard.innerHTML = `
+                <div class="copilot-msg-header">
+                    <i class="fa-solid fa-triangle-exclamation text-red"></i>
+                    <strong style="color:var(--neg);">Copilot Error</strong>
+                </div>
+                <div class="copilot-msg-body">${esc(json.detail || "Error communicating with Copilot service.")}</div>
+            `;
+            if (stream) stream.appendChild(errCard);
+        }
+    } catch (err) {
+        const indicator = document.getElementById("copilot-typing-indicator");
+        if (indicator) indicator.remove();
+        const errCard = document.createElement("div");
+        errCard.className = "copilot-msg-card copilot-assistant";
+        errCard.style.borderLeftColor = "var(--neg)";
+        errCard.innerHTML = `
+            <div class="copilot-msg-header">
+                <i class="fa-solid fa-triangle-exclamation text-red"></i>
+                <strong style="color:var(--neg);">Network Error</strong>
+            </div>
+            <div class="copilot-msg-body">Failed to reach ORBIT backend: ${esc(err.message)}</div>
+        `;
+        if (stream) stream.appendChild(errCard);
+    } finally {
+        _copilotIsLoading = false;
+        if (sendBtn) sendBtn.disabled = false;
+        if (stream) stream.scrollTop = stream.scrollHeight;
+    }
+}
+window.sendCopilotMessage = sendCopilotMessage;
+
+// Keyboard listener to close modals via Escape key
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+        closeCopilotModal();
+        closeExplainModal();
+        closeDecisionModal();
+        closeOpportunityModal();
+        closeRiskModal();
+        closeBrainModal();
+        closeConsensusModal();
+        closeStrategyModal();
+    }
+});
+
+// ============================================================
+//   DEDICATED ORBIT COPILOT PAGE CONTROLLER (PHASE 12 REDESIGN)
+// ============================================================
+let _copilotPageSessionId = null;
+let _copilotPageIsLoading = false;
+let _copilotActiveAsset = "AAPL";
+let _copilotActiveMarket = "US Stocks";
+let _copilotActiveMode = "DETAILED";
+let _copilotSearchTimer = null;
+let _copilotLoadingInterval = null;
+
+function formatCopilotMarkdown(raw) {
+    if (!raw) return "";
+    let html = esc(raw);
+    // Headers: ### Header
+    html = html.replace(/^### (.*$)/gim, '<h3 class="copilot-h3">$1</h3>');
+    html = html.replace(/^## (.*$)/gim, '<h3 class="copilot-h3">$1</h3>');
+    // Bold: **text**
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    // Bullet points: - item or • item
+    html = html.replace(/^[•\-\*] (.*$)/gim, '<li>$1</li>');
+    // Numbered lists: 1. item
+    html = html.replace(/^\d+\. (.*$)/gim, '<li>$1</li>');
+    // Group consecutive list items into ul
+    html = html.replace(/(<li>.*?<\/li>)+/gs, (match) => `<ul>${match}</ul>`);
+    // Paragraph breaks
+    html = html.replace(/\n\n/g, '<p></p>');
+    html = html.replace(/\n/g, '<br>');
+    return html;
+}
+
+// ── 2.2 Balance Display Synchronization ──
+function syncCopilotBalance() {
+    const balanceEl = document.getElementById("copilot-account-balance");
+    const walletEl = document.getElementById("wallet-balance");
+    const overviewEl = document.getElementById("overview-balance");
+    if (balanceEl) {
+        if (walletEl && walletEl.textContent.trim()) {
+            balanceEl.textContent = walletEl.textContent.replace("INR", "").trim();
+        } else if (overviewEl && overviewEl.textContent.trim()) {
+            balanceEl.textContent = overviewEl.textContent.replace("INR", "").trim();
+        } else {
+            balanceEl.textContent = "₹10,00,000.00";
+        }
+    }
+}
+window.syncCopilotBalance = syncCopilotBalance;
+
+// ── 2.1 Chat History Sidebar Management ──
+async function loadConversationsList() {
+    const listEl = document.getElementById("copilot-history-list");
+    if (!listEl) return;
+
+    try {
+        const res = await fetch("/api/chat/conversations?limit=40");
+        if (!res.ok) throw new Error("Failed to load conversations");
+        const json = await res.json();
+        const convs = json.data || [];
+
+        if (convs.length === 0) {
+            listEl.innerHTML = `
+                <div class="copilot-history-empty">
+                    <i class="fa-regular fa-message" style="margin-bottom:6px;font-size:18px;opacity:0.5;"></i>
+                    <p style="margin:0;">No previous analyses.</p>
+                </div>
+            `;
+            return;
+        }
+
+        // Group into Today, Yesterday, Older
+        const now = new Date();
+        const todayStr = now.toDateString();
+        const yest = new Date(now);
+        yest.setDate(yest.getDate() - 1);
+        const yestStr = yest.toDateString();
+
+        const groups = {
+            today: [],
+            yesterday: [],
+            older: [],
+        };
+
+        convs.forEach((c) => {
+            const d = new Date(c.updated_at || c.created_at);
+            const dStr = d.toDateString();
+            if (dStr === todayStr) {
+                groups.today.push(c);
+            } else if (dStr === yestStr) {
+                groups.yesterday.push(c);
+            } else {
+                groups.older.push(c);
+            }
+        });
+
+        let html = "";
+        const renderGroup = (title, items) => {
+            if (!items || items.length === 0) return "";
+            return `
+                <div class="copilot-history-group">
+                    <div class="copilot-history-group-title">${title}</div>
+                    ${items
+                        .map((c) => {
+                            const isActive = c.id === _copilotPageSessionId;
+                            const sym = c.selected_asset || "ASSET";
+                            const cleanTitle = esc(c.title || `${sym} Analysis`);
+                            return `
+                                <div class="copilot-history-item ${isActive ? "active" : ""}" onclick="selectConversation('${c.id}')" title="${cleanTitle}">
+                                    <div class="copilot-history-item-content">
+                                        <div class="copilot-history-title">${cleanTitle}</div>
+                                        <div class="copilot-history-meta">
+                                            <span class="copilot-history-badge">${esc(sym)}</span>
+                                            <span>${esc(c.selected_market || "Market")}</span>
+                                        </div>
+                                    </div>
+                                    <button class="copilot-history-delete-btn" onclick="deleteConversationClick(event, '${c.id}')" title="Delete conversation">
+                                        <i class="fa-solid fa-trash-can"></i>
+                                    </button>
+                                </div>
+                            `;
+                        })
+                        .join("")}
+                </div>
+            `;
+        };
+
+        html += renderGroup("TODAY", groups.today);
+        html += renderGroup("YESTERDAY", groups.yesterday);
+        html += renderGroup("OLDER", groups.older);
+
+        listEl.innerHTML = html;
+    } catch (err) {
+        listEl.innerHTML = `<div class="copilot-history-empty text-ruby">History offline</div>`;
+    }
+}
+window.loadConversationsList = loadConversationsList;
+
+async function selectConversation(convId) {
+    if (!convId) return;
+    _copilotPageSessionId = convId;
+
+    try {
+        const res = await fetch(`/api/chat/conversations/${convId}`);
+        if (!res.ok) throw new Error("Could not load conversation");
+        const json = await res.json();
+        const { conversation, messages } = json.data;
+
+        // Update active asset & market
+        if (conversation.selected_asset) {
+            _copilotActiveAsset = conversation.selected_asset;
+        }
+        if (conversation.selected_market) {
+            _copilotActiveMarket = conversation.selected_market;
+            const mktSelect = document.getElementById("copilot-market-select");
+            if (mktSelect) mktSelect.value = _copilotActiveMarket;
+        }
+
+        // Update Active Asset Banner
+        updateActiveAssetBanner(_copilotActiveAsset, _copilotActiveMarket);
+
+        // Render historical messages
+        const messagesBox = document.getElementById("copilot-page-messages");
+        if (messagesBox) {
+            messagesBox.innerHTML = "";
+            if (messages && messages.length > 0) {
+                messages.forEach((m) => {
+                    const isUser = m.role === "user";
+                    const card = document.createElement("div");
+                    card.className = `copilot-page-msg-card ${isUser ? "user" : "orbit"}`;
+                    const timeStr = m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : "";
+                    card.innerHTML = `
+                        <div class="copilot-page-msg-header">
+                            <i class="fa-solid ${isUser ? "fa-user" : "fa-robot text-emerald"}"></i>
+                            <strong>${isUser ? "You" : "ORBIT Copilot"}</strong>
+                            ${timeStr ? `<span>&bull; ${timeStr}</span>` : ""}
+                        </div>
+                        <div class="copilot-page-msg-body">${isUser ? esc(m.content) : formatCopilotMarkdown(m.content)}</div>
+                    `;
+                    messagesBox.appendChild(card);
+                });
+                messagesBox.scrollTop = messagesBox.scrollHeight;
+            }
+        }
+
+        // Sync analysis context and highlight active
+        syncCopilotPageView();
+        loadConversationsList();
+    } catch (err) {
+        console.warn("Error selecting conversation:", err);
+    }
+}
+window.selectConversation = selectConversation;
+
+function createNewAnalysis() {
+    _copilotPageSessionId = null;
+    const messagesBox = document.getElementById("copilot-page-messages");
+    if (messagesBox) messagesBox.innerHTML = "";
+    syncCopilotPageView();
+    loadConversationsList();
+    const input = document.getElementById("copilot-page-input");
+    if (input) input.focus();
+}
+window.createNewAnalysis = createNewAnalysis;
+
+function toggleCopilotSidebar() {
+    const sidebar = document.querySelector(".copilot-history-sidebar");
+    const container = document.querySelector(".copilot-terminal-container");
+    const openBtn = document.getElementById("copilot-sidebar-open-tab");
+    if (!sidebar || !container) return;
+
+    const isCollapsed = sidebar.classList.toggle("collapsed");
+    container.classList.toggle("sidebar-collapsed", isCollapsed);
+    if (openBtn) {
+        if (isCollapsed) {
+            openBtn.classList.remove("hidden");
+        } else {
+            openBtn.classList.add("hidden");
+        }
+    }
+}
+window.toggleCopilotSidebar = toggleCopilotSidebar;
+
+async function deleteConversationClick(event, convId) {
+    if (event) event.stopPropagation();
+    if (!convId) return;
+
+    try {
+        await fetch(`/api/chat/conversations/${convId}`, { method: "DELETE" });
+        if (_copilotPageSessionId === convId) {
+            createNewAnalysis();
+        } else {
+            loadConversationsList();
+        }
+    } catch (err) {
+        console.warn("Delete conversation error:", err);
+    }
+}
+window.deleteConversationClick = deleteConversationClick;
+
+// ── 3. Asset & Market Selection System ──
+function onCopilotMarketChange(marketVal) {
+    _copilotActiveMarket = marketVal;
+    updateActiveAssetBanner(_copilotActiveAsset, marketVal);
+    const searchInput = document.getElementById("copilot-asset-search");
+    if (searchInput) searchInput.placeholder = `Search in ${marketVal}...`;
+}
+window.onCopilotMarketChange = onCopilotMarketChange;
+
+function updateActiveAssetBanner(sym, market, name) {
+    const titleEl = document.getElementById("copilot-active-asset-title");
+    const exchEl = document.getElementById("copilot-active-asset-exchange");
+    const symBadge = document.getElementById("copilot-page-symbol");
+    if (titleEl) titleEl.innerHTML = `${esc(sym)} &bull; <span>${esc(name || sym)}</span>`;
+    if (exchEl) exchEl.textContent = `${esc(market || _copilotActiveMarket)}`;
+    if (symBadge) symBadge.textContent = esc(sym);
+}
+
+function onAssetSearchInput(query) {
+    clearTimeout(_copilotSearchTimer);
+    const dropdown = document.getElementById("copilot-search-dropdown");
+    if (!dropdown) return;
+
+    const q = query.trim();
+    if (!q) {
+        dropdown.classList.add("hidden");
+        dropdown.innerHTML = "";
+        return;
+    }
+
+    dropdown.classList.remove("hidden");
+    dropdown.innerHTML = `<div class="copilot-search-loading"><i class="fa-solid fa-spinner fa-spin"></i> Searching ${esc(_copilotActiveMarket)}...</div>`;
+
+    _copilotSearchTimer = setTimeout(async () => {
+        try {
+            const url = `/api/market/search?q=${encodeURIComponent(q)}&market=${encodeURIComponent(_copilotActiveMarket)}`;
+            const res = await fetch(url);
+            if (!res.ok) throw new Error("Search failed");
+            const json = await res.json();
+            const results = (json.data && json.data.results) || json.results || (Array.isArray(json.data) ? json.data : []) || [];
+
+            if (results.length === 0) {
+                dropdown.innerHTML = `<div class="copilot-search-empty">No matching assets found</div>`;
+                return;
+            }
+
+            dropdown.innerHTML = results
+                .slice(0, 8)
+                .map(
+                    (r) => `
+                <div class="copilot-search-item" onclick="selectAsset('${esc(r.symbol)}', '${esc(r.name)}', '${esc(r.exchange)}')">
+                    <div class="copilot-search-item-left">
+                        <span class="copilot-search-item-sym">${esc(r.symbol)}</span>
+                        <span class="copilot-search-item-name">${esc(r.name)}</span>
+                    </div>
+                    <div class="copilot-search-item-right">${esc(r.exchange || r.type)}</div>
+                </div>
+            `
+                )
+                .join("");
+        } catch (err) {
+            dropdown.innerHTML = `<div class="copilot-search-empty text-ruby">Search temporarily unavailable</div>`;
+        }
+    }, 280);
+}
+window.onAssetSearchInput = onAssetSearchInput;
+
+function selectAsset(symbol, name, exchange) {
+    _copilotActiveAsset = symbol.trim().toUpperCase();
+    updateActiveAssetBanner(_copilotActiveAsset, _copilotActiveMarket, name);
+
+    const dropdown = document.getElementById("copilot-search-dropdown");
+    if (dropdown) dropdown.classList.add("hidden");
+    const searchInput = document.getElementById("copilot-asset-search");
+    if (searchInput) searchInput.value = "";
+
+    // Sync context for newly selected asset
+    syncCopilotPageView();
+}
+window.selectAsset = selectAsset;
+
+// ── 14. Response Modes ──
+function setResponseMode(mode) {
+    _copilotActiveMode = mode;
+    const btns = document.querySelectorAll(".copilot-mode-btn");
+    btns.forEach((b) => {
+        if (b.getAttribute("data-mode") === mode) {
+            b.classList.add("active");
+        } else {
+            b.classList.remove("active");
+        }
+    });
+}
+window.setResponseMode = setResponseMode;
+
+// ── Context Synchronization ──
+async function syncCopilotPageView() {
+    const symBadge = document.getElementById("copilot-page-symbol");
+    const statusBadge = document.getElementById("copilot-page-analysis-status");
+    const stanceEl = document.getElementById("copilot-page-stance");
+    const confEl = document.getElementById("copilot-page-confidence");
+    const riskEl = document.getElementById("copilot-page-risk");
+    const oppEl = document.getElementById("copilot-page-opportunity");
+    const setupsEl = document.getElementById("copilot-page-setups");
+    const messagesBox = document.getElementById("copilot-page-messages");
+
+    syncCopilotBalance();
+
+    let activeSym = _copilotActiveAsset || 
+                    (currentAsset && currentAsset.trim()) || 
+                    (activeTickerDisplay && activeTickerDisplay.textContent.trim() !== "--" && activeTickerDisplay.textContent.trim()) || 
+                    "AAPL";
+    _copilotActiveAsset = activeSym;
+
+    if (symBadge) symBadge.textContent = activeSym;
+    updateActiveAssetBanner(activeSym, _copilotActiveMarket);
+
+    if (statusBadge) {
+        statusBadge.className = "copilot-status-badge";
+        statusBadge.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Checking Context...';
+    }
+
+    try {
+        const tf = currentTimeframe || "1d";
+        const res = await fetch(`/api/copilot/context?symbol=${encodeURIComponent(activeSym)}&timeframe=${encodeURIComponent(tf)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const d = json.data;
+
+        if (statusBadge) {
+            statusBadge.className = "copilot-status-badge available";
+            statusBadge.innerHTML = '<i class="fa-solid fa-circle-check"></i> Analysis Available';
+        }
+
+        if (stanceEl) {
+            stanceEl.textContent = d.market_stance;
+            stanceEl.className = `telem-val ${d.market_stance.toLowerCase().includes("bull") ? "text-emerald" : d.market_stance.toLowerCase().includes("bear") ? "text-ruby" : "text-amber"}`;
+        }
+        if (confEl) confEl.textContent = `${Number(d.confidence).toFixed(1)}%`;
+        if (riskEl) riskEl.textContent = `${d.risk_level} (${Number(d.risk_score).toFixed(0)})`;
+        if (oppEl) oppEl.textContent = `${Number(d.opportunity_score).toFixed(0)}/100`;
+        if (setupsEl) setupsEl.textContent = d.active_setups_count !== undefined ? d.active_setups_count : "--";
+
+        // Update suggested chips
+        if (d.suggested_questions && d.suggested_questions.length > 0) {
+            const chipsBar = document.getElementById("copilot-page-suggestions");
+            if (chipsBar) {
+                chipsBar.innerHTML = `
+                    <span class="suggestions-label"><i class="fa-solid fa-lightbulb text-amber"></i> Suggested:</span>
+                    ${d.suggested_questions.map((q) => `<button class="copilot-chip" onclick="askCopilotPagePreset('${esc(q)}')">${esc(q)}</button>`).join("")}
+                `;
+            }
+        }
+
+        // Add initial welcome card if messages box is empty
+        if (messagesBox && messagesBox.children.length === 0) {
+            const welcomeCard = document.createElement("div");
+            welcomeCard.className = "copilot-page-msg-card orbit";
+            welcomeCard.innerHTML = `
+                <div class="copilot-page-msg-header">
+                    <i class="fa-solid fa-robot text-emerald"></i>
+                    <strong>ORBIT AI Analyst</strong>
+                    <span>&bull; ${activeSym} Context Active</span>
+                </div>
+                <div class="copilot-page-msg-body">
+                    <p>Connected to <strong>${esc(activeSym)}</strong> in <strong>${esc(_copilotActiveMarket)}</strong> via Alpha Vantage and ORBIT analytical pipeline.</p>
+                    <p>Current Stance: <strong>${d.market_stance}</strong> (${Number(d.confidence).toFixed(1)}% Confidence | ${d.clarity} Clarity).<br>
+                    Analytical Risk is <strong>${d.risk_level}</strong> (${Number(d.risk_score).toFixed(1)}/100) and Opportunity is <strong>${Number(d.opportunity_score).toFixed(1)}/100</strong>.</p>
+                    <p>Ask any question about <strong>${esc(activeSym)}</strong> or choose a suggested question above.</p>
+                </div>
+            `;
+            messagesBox.appendChild(welcomeCard);
+        }
+    } catch (err) {
+        if (statusBadge) {
+            statusBadge.className = "copilot-status-badge not-available";
+            statusBadge.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i> Ready';
+        }
+    }
+}
+window.syncCopilotPageView = syncCopilotPageView;
+
+// ── Send Message Execution with Loading Stages ──
+async function sendCopilotPageMessage() {
+    if (_copilotPageIsLoading) return;
+    const input = document.getElementById("copilot-page-input");
+    const sendBtn = document.getElementById("copilot-page-send-btn");
+    const loadingBar = document.getElementById("copilot-page-loading");
+    const loadingText = document.getElementById("copilot-loading-text");
+    const errorBanner = document.getElementById("copilot-page-error");
+    const messagesBox = document.getElementById("copilot-page-messages");
+
+    const message = input ? input.value.trim() : "";
+    if (!message) return;
+
+    const activeSym = _copilotActiveAsset || "AAPL";
+
+    // Append user message
+    if (messagesBox) {
+        const userCard = document.createElement("div");
+        userCard.className = "copilot-page-msg-card user";
+        userCard.innerHTML = `
+            <div class="copilot-page-msg-header">
+                <i class="fa-solid fa-user"></i>
+                <strong>You</strong>
+                <span>&bull; ${new Date().toLocaleTimeString()}</span>
+            </div>
+            <div class="copilot-page-msg-body">${esc(message)}</div>
+        `;
+        messagesBox.appendChild(userCard);
+        messagesBox.scrollTop = messagesBox.scrollHeight;
+    }
+
+    if (input) input.value = "";
+    if (sendBtn) sendBtn.disabled = true;
+    if (loadingBar) loadingBar.classList.remove("hidden");
+    if (errorBanner) errorBanner.classList.add("hidden");
+    _copilotPageIsLoading = true;
+
+    // 20. Loading stages rotation
+    const stages = [
+        "Loading market data from Alpha Vantage...",
+        "Analyzing market context & indicators...",
+        "Evaluating risk guard & consensus...",
+        "Generating ORBIT analytical view...",
+    ];
+    let stageIdx = 0;
+    if (loadingText) loadingText.textContent = stages[0];
+    clearInterval(_copilotLoadingInterval);
+    _copilotLoadingInterval = setInterval(() => {
+        stageIdx = (stageIdx + 1) % stages.length;
+        if (loadingText) loadingText.textContent = stages[stageIdx];
+    }, 1500);
+
+    try {
+        const tf = currentTimeframe || "1d";
+        const payload = {
+            message: message,
+            symbol: activeSym,
+            selected_asset: activeSym,
+            selected_market: _copilotActiveMarket,
+            timeframe: tf,
+            conversation_id: _copilotPageSessionId || undefined,
+            response_mode: _copilotActiveMode,
+        };
+
+        const res = await fetch("/api/copilot/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+        });
+
+        const json = await res.json();
+        if (!res.ok || !json.ok) {
+            throw new Error(json.detail || "Copilot response failed.");
+        }
+
+        const d = json.data;
+        _copilotPageSessionId = d.conversation_id;
+
+        // Append ORBIT response
+        if (messagesBox) {
+            const orbitCard = document.createElement("div");
+            orbitCard.className = "copilot-page-msg-card orbit";
+            const stanceBadge = d.context_summary ? `<span class="copilot-tag">${esc(d.context_summary.market_stance)}</span>` : "";
+            const latencyTag = d.latency_ms ? `<span>&bull; ${d.latency_ms}ms</span>` : "";
+            orbitCard.innerHTML = `
+                <div class="copilot-page-msg-header">
+                    <i class="fa-solid fa-robot text-emerald"></i>
+                    <strong>ORBIT Copilot</strong>
+                    ${stanceBadge}
+                    ${latencyTag}
+                </div>
+                <div class="copilot-page-msg-body">${formatCopilotMarkdown(d.answer)}</div>
+            `;
+            messagesBox.appendChild(orbitCard);
+            messagesBox.scrollTop = messagesBox.scrollHeight;
+        }
+
+        // Update suggestions if provided
+        if (d.suggested_followups && d.suggested_followups.length > 0) {
+            const chipsBar = document.getElementById("copilot-page-suggestions");
+            if (chipsBar) {
+                chipsBar.innerHTML = `
+                    <span class="suggestions-label"><i class="fa-solid fa-lightbulb text-amber"></i> Next:</span>
+                    ${d.suggested_followups.map((q) => `<button class="copilot-chip" onclick="askCopilotPagePreset('${esc(q)}')">${esc(q)}</button>`).join("")}
+                `;
+            }
+        }
+
+        // Refresh conversation history in sidebar to update title
+        loadConversationsList();
+    } catch (err) {
+        if (errorBanner) {
+            const errMsg = document.getElementById("copilot-page-error-msg");
+            if (errMsg) errMsg.textContent = `ORBIT Copilot notice: ${err.message}`;
+            errorBanner.classList.remove("hidden");
+        }
+        if (messagesBox) {
+            const errCard = document.createElement("div");
+            errCard.className = "copilot-page-msg-card orbit";
+            errCard.style.borderColor = "var(--neg, #ff4d4d)";
+            errCard.innerHTML = `
+                <div class="copilot-page-msg-header">
+                    <i class="fa-solid fa-triangle-exclamation text-ruby"></i>
+                    <strong style="color:var(--neg, #ff4d4d);">Copilot Service Notice</strong>
+                </div>
+                <div class="copilot-page-msg-body">
+                    <p>Market data or analytical engine output is temporarily unavailable for <strong>${esc(activeSym)}</strong>: ${esc(err.message)}.</p>
+                </div>
+            `;
+            messagesBox.appendChild(errCard);
+            messagesBox.scrollTop = messagesBox.scrollHeight;
+        }
+    } finally {
+        _copilotPageIsLoading = false;
+        clearInterval(_copilotLoadingInterval);
+        if (sendBtn) sendBtn.disabled = false;
+        if (loadingBar) loadingBar.classList.add("hidden");
+    }
+}
+window.sendCopilotPageMessage = sendCopilotPageMessage;
+
+function askCopilotPagePreset(question) {
+    const input = document.getElementById("copilot-page-input");
+    if (input) input.value = question;
+    sendCopilotPageMessage();
+}
+window.askCopilotPagePreset = askCopilotPagePreset;
+
+async function clearCopilotPageChat() {
+    if (_copilotPageSessionId) {
+        try {
+            await fetch("/api/copilot/reset", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ conversation_id: _copilotPageSessionId }),
+            });
+        } catch (e) {}
+    }
+    createNewAnalysis();
+}
+window.clearCopilotPageChat = clearCopilotPageChat;
+
+// Initialize Copilot listeners & load history on tab open
+document.addEventListener("DOMContentLoaded", () => {
+    const pageInput = document.getElementById("copilot-page-input");
+    if (pageInput) {
+        pageInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendCopilotPageMessage();
+            }
+        });
+    }
+
+    // Close search dropdown on click outside
+    document.addEventListener("click", (e) => {
+        const searchWrap = document.querySelector(".copilot-search-wrap");
+        const dropdown = document.getElementById("copilot-search-dropdown");
+        if (dropdown && searchWrap && !searchWrap.contains(e.target)) {
+            dropdown.classList.add("hidden");
+        }
+    });
+
+    // Initial conversation load
+    loadConversationsList();
+    syncCopilotBalance();
+    fetchDashboardSummary();
+});
+
+// =============================================================
+//   MANAGE TRADES TERMINAL CONTROLLERS & LIFECYCLE
+// =============================================================
+
+let _currentManageSubTab = "open";
+let _openTradesCache = [];
+let _activeManageTrade = null;
+let _closeSelectedPct = null;
+let _isCloseExecuting = false;
+let currentHistoryPage = 0;
+let totalHistoryPages = 1;
+let _historySearchDebounceTimer = null;
+
+// Sub-tab switcher
+function switchManageSubTab(subTab) {
+    _currentManageSubTab = subTab;
+    const btnOpen = document.getElementById("subtab-btn-open-trades");
+    const btnPending = document.getElementById("subtab-btn-pending-orders");
+    const btnHistory = document.getElementById("subtab-btn-trade-history");
+
+    const panelOpen = document.getElementById("manage-subtab-open");
+    const panelPending = document.getElementById("manage-subtab-pending");
+    const panelHistory = document.getElementById("manage-subtab-history");
+
+    if (btnOpen) btnOpen.classList.toggle("active", subTab === "open");
+    if (btnPending) btnPending.classList.toggle("active", subTab === "pending");
+    if (btnHistory) btnHistory.classList.toggle("active", subTab === "history");
+
+    if (panelOpen) panelOpen.classList.toggle("hidden-subtab", subTab !== "open");
+    if (panelPending) panelPending.classList.toggle("hidden-subtab", subTab !== "pending");
+    if (panelHistory) panelHistory.classList.toggle("hidden-subtab", subTab !== "history");
+
+    if (subTab === "open") loadOpenTrades();
+    else if (subTab === "pending") loadPendingOrders();
+    else if (subTab === "history") loadTradeHistoryPage(0);
+}
+window.switchManageSubTab = switchManageSubTab;
+
+// Load all Manage Trades views
+async function loadManageTradesData(btnElement) {
+    let originalHtml = "";
+    if (btnElement) {
+        btnElement.disabled = true;
+        originalHtml = btnElement.innerHTML;
+        btnElement.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> <span>Refreshing...</span>';
+    }
+    try {
+        const results = await Promise.allSettled([
+            loadOpenTrades(),
+            loadPendingOrders(),
+            loadTradeHistoryPage(currentHistoryPage || 0),
+            fetchDashboardSummary()
+        ]);
+        const anyFailed = results.some(r => r.status === "rejected");
+        if (anyFailed) {
+            console.warn("[ManageTrades] Some items failed to refresh:", results);
+            if (btnElement) {
+                btnElement.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-yellow"></i> <span>Partial</span>';
+                setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 1500);
+                return;
+            }
+        }
+        if (btnElement) {
+            btnElement.innerHTML = '<i class="fa-solid fa-check text-green"></i> <span>Updated</span>';
+            setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 1200);
+        }
+    } catch (err) {
+        console.error("[ManageTrades] Error refreshing data:", err);
+        if (btnElement) {
+            btnElement.innerHTML = '<i class="fa-solid fa-xmark text-red"></i> <span>Connection error</span>';
+            setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 2000);
+        }
+    } finally {
+        if (btnElement && !btnElement.innerHTML.includes("text-green") && !btnElement.innerHTML.includes("text-yellow") && !btnElement.innerHTML.includes("text-red")) {
+            btnElement.disabled = false;
+            btnElement.innerHTML = originalHtml;
+        }
+    }
+}
+window.loadManageTradesData = loadManageTradesData;
+
+// Universal refresh function for dashboard & system state
+async function refreshAllData(btnElement) {
+    let originalHtml = "";
+    if (btnElement) {
+        btnElement.disabled = true;
+        originalHtml = btnElement.innerHTML;
+        btnElement.innerHTML = '<i class="fa-solid fa-rotate fa-spin"></i> <span>Refreshing...</span>';
+    }
+    try {
+        const results = await Promise.allSettled([
+            fetchDashboardSummary(),
+            loadOpenTrades(),
+            loadPendingOrders(),
+            loadTradeHistoryPage(currentHistoryPage || 0),
+            typeof fetchGlobalNews === "function" ? fetchGlobalNews() : Promise.resolve()
+        ]);
+        const anyFailed = results.some(r => r.status === "rejected");
+        if (anyFailed) {
+            console.warn("[Refresh] Some requests failed:", results);
+            if (btnElement) {
+                btnElement.innerHTML = '<i class="fa-solid fa-triangle-exclamation text-yellow"></i> <span>Partial</span>';
+                setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 1500);
+                return;
+            }
+        }
+        if (btnElement) {
+            btnElement.innerHTML = '<i class="fa-solid fa-check text-green"></i> <span>Updated</span>';
+            setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 1200);
+        }
+    } catch (err) {
+        console.error("[Refresh] Error refreshing system data:", err);
+        if (btnElement) {
+            btnElement.innerHTML = '<i class="fa-solid fa-xmark text-red"></i> <span>Connection error</span>';
+            setTimeout(() => { if (btnElement) { btnElement.innerHTML = originalHtml; btnElement.disabled = false; } }, 2000);
+        }
+    } finally {
+        if (btnElement && !btnElement.innerHTML.includes("text-green") && !btnElement.innerHTML.includes("text-yellow") && !btnElement.innerHTML.includes("text-red")) {
+            btnElement.disabled = false;
+            btnElement.innerHTML = originalHtml;
+        }
+    }
+}
+window.refreshAllData = refreshAllData;
+
+// Load Open Trades (Unified with Single Source of Truth)
+async function loadOpenTrades() {
+    const tbody = document.getElementById("open-trades-tbody");
+    const countBadge = document.getElementById("manage-open-count");
+    const overviewActiveEl = document.getElementById("overview-active-trades");
+    try {
+        const userId = currentUserId || (typeof localStorage !== "undefined" ? localStorage.getItem("orbit_user_id") : null) || 1;
+        const res = await fetch(`/api/trades/open?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) throw new Error("Failed to load open positions");
+        const json = await res.json();
+        const positions = json.positions || json.trades || [];
+        _openTradesCache = positions;
+
+        if (countBadge) countBadge.textContent = positions.length;
+        if (overviewActiveEl) overviewActiveEl.textContent = positions.length;
+
+        if (!tbody) return;
+        if (positions.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="13" class="table-empty-message">No active positions. Execute a trade from the Terminal or Auto-Trade Bot to begin.</td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = positions.map(pos => {
+            const pnl = Number(pos.unrealized_pnl || 0);
+            const pnlClass = pnl >= 0 ? "text-green" : "text-red";
+            const side = (pos.side || pos.type || "buy").toUpperCase();
+            const sideClass = side === "BUY" || side === "LONG" ? "badge-green" : "badge-red";
+            const sideLabel = side === "BUY" ? "LONG" : side === "SELL" ? "SHORT" : side;
+            const market = pos.market || "Crypto";
+            const lev = pos.leverage || 1;
+            const posSize = Number(pos.remaining_quantity || pos.quantity || 0) * Number(pos.current_price || pos.entry_price || 0);
+            const marginUsed = Number(pos.margin_used || 0);
+            const pnlPct = marginUsed > 0 ? ((pnl / marginUsed) * 100).toFixed(2) : "0.00";
+            const openTime = pos.opened_at ? new Date(pos.opened_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'}) : "—";
+
+            return `
+                <tr>
+                    <td><strong>${esc(pos.symbol || pos.asset)}</strong></td>
+                    <td><span class="badge badge-blue">${esc(market)}</span></td>
+                    <td><span class="badge ${sideClass}">${esc(sideLabel)}</span></td>
+                    <td><span class="badge badge-blue">OPEN</span></td>
+                    <td>${formatINR(pos.entry_price)}</td>
+                    <td><strong>${formatINR(pos.current_price)}</strong></td>
+                    <td>${Number(pos.remaining_quantity || pos.quantity)} <span style="opacity:0.6;font-size:11px;">/ ${Number(pos.original_quantity || pos.quantity)}</span></td>
+                    <td><span class="text-cyan font-bold">${lev}x</span></td>
+                    <td>${formatINR(posSize)}</td>
+                    <td>${formatINR(marginUsed)}</td>
+                    <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong> <span style="font-size:11px;opacity:0.8;">(${pnl >= 0 ? "+" : ""}${pnlPct}%)</span></td>
+                    <td>${openTime}</td>
+                    <td>
+                        <button class="glow-btn btn-manage-action" onclick="openManageTradeModal(${pos.id})">
+                            <i class="fa-solid fa-sliders"></i> Manage
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    } catch (err) {
+        console.error("[ManageTrades] Error loading open positions:", err);
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="13" class="table-empty-message text-red">Failed to load active trades: ${esc(err.message)}</td></tr>`;
+        }
+    }
+}
+window.loadOpenTrades = loadOpenTrades;
+
+// Load Pending Orders
+async function loadPendingOrders() {
+    const tbody = document.getElementById("pending-orders-tbody");
+    const countBadge = document.getElementById("manage-pending-count");
+    try {
+        const userId = currentUserId || (typeof localStorage !== "undefined" ? localStorage.getItem("orbit_user_id") : null) || 1;
+        const res = await fetch(`/api/trades/pending?user_id=${encodeURIComponent(userId)}`);
+        if (!res.ok) throw new Error("Failed to load pending orders");
+        const json = await res.json();
+        const orders = json.orders || [];
+
+        if (countBadge) countBadge.textContent = orders.length;
+
+        if (!tbody) return;
+        if (orders.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="10" class="table-empty-message">No pending orders. Limit and trigger orders awaiting execution will appear here.</td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = orders.map(ord => {
+            const side = (ord.type || ord.side || "BUY").toUpperCase();
+            const sideClass = side === "BUY" ? "badge-green" : "badge-red";
+            const created = ord.timestamp ? new Date(ord.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "—";
+            return `
+                <tr>
+                    <td><code>#${ord.id}</code></td>
+                    <td><strong>${esc(ord.asset || ord.symbol)}</strong></td>
+                    <td><span class="badge ${sideClass}">${esc(side)}</span></td>
+                    <td>${Number(ord.quantity || 1)}</td>
+                    <td>${formatINR(ord.entry_price || 0)}</td>
+                    <td>${formatINR(ord.sl || 0)}</td>
+                    <td>${formatINR(ord.target || 0)}</td>
+                    <td>${created}</td>
+                    <td><span class="badge badge-yellow">PENDING</span></td>
+                    <td>
+                        <button class="glow-btn btn-secondary btn-sm" onclick="cancelPendingOrder(${ord.id})">
+                            <i class="fa-solid fa-ban"></i> Cancel
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    } catch (err) {
+        console.error("[ManageTrades] Error loading pending orders:", err);
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="10" class="table-empty-message text-red">Failed to load pending orders: ${esc(err.message)}</td></tr>`;
+        }
+    }
+}
+window.loadPendingOrders = loadPendingOrders;
+
+// Cancel Pending Order
+async function cancelPendingOrder(orderId) {
+    if (!confirm("Are you sure you want to cancel this pending order?")) return;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ action: "cancel_trade", trade_id: orderId }));
+    }
+    setTimeout(() => {
+        loadPendingOrders();
+        fetchDashboardSummary();
+    }, 300);
+}
+window.cancelPendingOrder = cancelPendingOrder;
+
+// Load Paginated Trade History
+async function loadTradeHistoryPage(page) {
+    if (page !== undefined) currentHistoryPage = page;
+    const tbody = document.getElementById("trade-history-tbody");
+    const countBadge = document.getElementById("manage-history-count");
+    const prevBtn = document.getElementById("history-prev-btn");
+    const nextBtn = document.getElementById("history-next-btn");
+    const pageInfo = document.getElementById("history-page-info");
+
+    const search = (document.getElementById("history-filter-symbol")?.value || "").trim();
+    const market = document.getElementById("history-filter-market")?.value || "";
+    const side = document.getElementById("history-filter-side")?.value || "";
+    const outcome = document.getElementById("history-filter-outcome")?.value || "";
+
+    const limit = 15;
+    const offset = currentHistoryPage * limit;
+
+    try {
+        const userId = currentUserId || (typeof localStorage !== "undefined" ? localStorage.getItem("orbit_user_id") : null) || 1;
+        const queryParams = new URLSearchParams({
+            user_id: String(userId),
+            limit: String(limit),
+            offset: String(offset)
+        });
+        if (search) queryParams.append("symbol", search);
+        if (market) queryParams.append("market", market);
+        if (side) queryParams.append("side", side);
+        if (outcome) queryParams.append("outcome", outcome);
+
+        const res = await fetch(`/api/trades/history?${queryParams.toString()}`);
+        if (!res.ok) throw new Error("Failed to load trade history");
+        const json = await res.json();
+        const trades = json.trades || [];
+        const total = json.total || 0;
+
+        if (countBadge) countBadge.textContent = total;
+
+        totalHistoryPages = Math.max(1, Math.ceil(total / limit));
+        if (pageInfo) pageInfo.textContent = `Page ${currentHistoryPage + 1} of ${totalHistoryPages}`;
+        if (prevBtn) prevBtn.disabled = currentHistoryPage <= 0;
+        if (nextBtn) nextBtn.disabled = currentHistoryPage >= totalHistoryPages - 1;
+
+        if (!tbody) return;
+        if (trades.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="12" class="table-empty-message">No completed trades match your filter criteria.</td>
+                </tr>
+            `;
+            return;
+        }
+
+        tbody.innerHTML = trades.map(trade => {
+            const pnl = Number(trade.realized_pnl !== undefined ? trade.realized_pnl : (trade.pnl || 0));
+            const pnlClass = pnl > 0 ? "text-green" : pnl < 0 ? "text-red" : "";
+            const side = (trade.side || trade.type || "buy").toUpperCase();
+            const sideLabel = side === "BUY" ? "LONG" : side === "SELL" ? "SHORT" : side;
+            const sideClass = side === "BUY" || side === "LONG" ? "badge-green" : "badge-red";
+            const outcome = trade.outcome || (pnl > 0 ? "profit" : pnl < 0 ? "loss" : "closed");
+            const outcomeClass = outcome === "target" || outcome === "profit" ? "badge-green" : outcome === "cancelled" ? "badge-yellow" : "badge-red";
+            const openTime = trade.opened_at || trade.timestamp ? new Date(trade.opened_at || trade.timestamp).toLocaleDateString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : "—";
+            const closeTime = trade.closed_at ? new Date(trade.closed_at).toLocaleDateString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : "—";
+            const lev = trade.leverage || 1;
+            const exitPrice = trade.exit_price !== null && trade.exit_price !== undefined ? formatINR(trade.exit_price) : "—";
+
+            return `
+                <tr>
+                    <td><strong>${esc(trade.symbol || trade.asset)}</strong></td>
+                    <td><span class="badge badge-blue">${esc(trade.market || "Crypto")}</span></td>
+                    <td><span class="badge ${sideClass}">${esc(sideLabel)}</span></td>
+                    <td>${formatINR(trade.entry_price || 0)}</td>
+                    <td><strong>${exitPrice}</strong></td>
+                    <td>${Number(trade.quantity || 0)}</td>
+                    <td><span class="text-cyan font-bold">${lev}x</span></td>
+                    <td class="${pnlClass}"><strong>${pnl >= 0 ? "+" : ""}${formatINR(pnl)}</strong></td>
+                    <td><span class="badge ${outcomeClass}">${esc(outcome).toUpperCase()}</span></td>
+                    <td>${openTime}</td>
+                    <td>${closeTime}</td>
+                    <td><span class="badge badge-yellow">${esc(trade.status || "CLOSED").toUpperCase()}</span></td>
+                </tr>
+            `;
+        }).join("");
+    } catch (err) {
+        console.error("[ManageTrades] Error loading history:", err);
+        if (tbody) {
+            tbody.innerHTML = `<tr><td colspan="12" class="table-empty-message text-red">Failed to load history: ${esc(err.message)}</td></tr>`;
+        }
+    }
+}
+window.loadTradeHistoryPage = loadTradeHistoryPage;
+
+function paginateHistory(direction) {
+    const targetPage = currentHistoryPage + direction;
+    if (targetPage >= 0 && targetPage < totalHistoryPages) {
+        loadTradeHistoryPage(targetPage);
+    }
+}
+window.paginateHistory = paginateHistory;
+
+function debouncedHistorySearch() {
+    clearTimeout(_historySearchDebounceTimer);
+    _historySearchDebounceTimer = setTimeout(() => {
+        loadTradeHistoryPage(0);
+    }, 300);
+}
+window.debouncedHistorySearch = debouncedHistorySearch;
+
+// Manage Trade Modal Operations
+function openManageTradeModal(tradeId) {
+    const trade = _openTradesCache.find(p => p.id === tradeId);
+    if (!trade) {
+        console.warn("[ManageTrades] Trade not found in cache:", tradeId);
+        return;
+    }
+    _activeManageTrade = trade;
+    _closeSelectedPct = null;
+
+    const modal = document.getElementById("manage-trade-modal");
+    if (!modal) return;
+
+    // Populate header & specs
+    const symbol = trade.symbol || trade.asset || "";
+    safeText(document.getElementById("mmodal-symbol-sub"), `${symbol} • ${trade.market || "Spot"} Market`);
+    const side = (trade.side || trade.type || "buy").toUpperCase();
+    const sideBadge = document.getElementById("mmodal-side-badge");
+    if (sideBadge) {
+        sideBadge.textContent = side === "BUY" ? "LONG" : side === "SELL" ? "SHORT" : side;
+        sideBadge.className = `trade-side-badge ${side === "BUY" || side === "LONG" ? "buy" : "sell"}`;
+    }
+    safeText(document.getElementById("mmodal-status-badge"), "OPEN");
+
+    safeText(document.getElementById("mmodal-entry-price"), formatINR(trade.entry_price || 0));
+    safeText(document.getElementById("mmodal-current-price"), formatINR(trade.current_price || 0));
+    safeText(document.getElementById("mmodal-total-qty"), String(trade.original_quantity || trade.quantity || 1));
+    safeText(document.getElementById("mmodal-remaining-qty"), String(trade.remaining_quantity || trade.quantity || 1));
+    safeText(document.getElementById("mmodal-leverage"), `${trade.leverage || 1}x`);
+
+    const uPnl = Number(trade.unrealized_pnl || 0);
+    const uPnlEl = document.getElementById("mmodal-unrealized-pnl");
+    if (uPnlEl) {
+        uPnlEl.textContent = (uPnl >= 0 ? "+" : "") + formatINR(uPnl);
+        uPnlEl.className = `mmodal-metric-val ${uPnl >= 0 ? "text-green" : "text-red"}`;
+    }
+
+    // Default select 50%
+    selectClosePct(50);
+
+    modal.classList.remove("hidden");
+}
+window.openManageTradeModal = openManageTradeModal;
+
+function closeManageTradeModal() {
+    const modal = document.getElementById("manage-trade-modal");
+    if (modal) modal.classList.add("hidden");
+    _activeManageTrade = null;
+    _closeSelectedPct = null;
+}
+window.closeManageTradeModal = closeManageTradeModal;
+
+function selectClosePct(pct) {
+    if (!_activeManageTrade) return;
+    _closeSelectedPct = pct;
+
+    // Update active style on pct buttons
+    document.querySelectorAll(".close-pct-btn-group .pct-btn").forEach(btn => {
+        const text = btn.textContent.trim();
+        const matches = (pct === 100 && text.includes("FULL")) || text.includes(`${pct}%`);
+        btn.classList.toggle("active-pct", matches);
+    });
+
+    const remQty = Number(_activeManageTrade.remaining_quantity || _activeManageTrade.quantity || 1);
+    let closeQty = (remQty * (pct / 100));
+    if (Number.isInteger(remQty)) {
+        closeQty = Math.max(1, Math.round(closeQty));
+        if (pct < 100 && closeQty >= remQty) {
+            closeQty = Math.max(1, remQty - 1);
+        }
+    } else {
+        closeQty = Number(closeQty.toFixed(4));
+    }
+    if (pct === 100) closeQty = remQty;
+
+    const input = document.getElementById("custom-close-qty");
+    if (input) input.value = closeQty;
+
+    recalculateCloseEstimates(closeQty);
+}
+window.selectClosePct = selectClosePct;
+
+function onCustomCloseInput() {
+    if (!_activeManageTrade) return;
+    document.querySelectorAll(".close-pct-btn-group .pct-btn").forEach(btn => btn.classList.remove("active-pct"));
+    _closeSelectedPct = null;
+
+    const input = document.getElementById("custom-close-qty");
+    const val = parseFloat(input.value);
+    const remQty = Number(_activeManageTrade.remaining_quantity || _activeManageTrade.quantity || 1);
+
+    if (isNaN(val) || val <= 0) {
+        recalculateCloseEstimates(0);
+        return;
+    }
+    const safeQty = Math.min(val, remQty);
+    if (val > remQty) {
+        input.value = safeQty;
+    }
+    recalculateCloseEstimates(safeQty);
+}
+window.onCustomCloseInput = onCustomCloseInput;
+
+function setMaxCloseQty() {
+    if (!_activeManageTrade) return;
+    selectClosePct(100);
+}
+window.setMaxCloseQty = setMaxCloseQty;
+
+function recalculateCloseEstimates(closeQty) {
+    if (!_activeManageTrade) return;
+    const trade = _activeManageTrade;
+    const entry = Number(trade.entry_price || 0);
+    const current = Number(trade.current_price || entry);
+    const lev = Number(trade.leverage || 1);
+    const remQty = Number(trade.remaining_quantity || trade.quantity || 1);
+    const marginUsed = Number(trade.margin_used || 0);
+    const side = (trade.side || trade.type || "buy").toLowerCase();
+
+    let estPnl = 0;
+    if (side === "buy" || side === "long") {
+        estPnl = (current - entry) * closeQty * lev;
+    } else {
+        estPnl = (entry - current) * closeQty * lev;
+    }
+
+    const marginPortion = remQty > 0 ? (closeQty / remQty) * marginUsed : 0;
+    const totalRefund = marginPortion + estPnl;
+
+    safeText(document.getElementById("est-close-qty"), String(closeQty));
+    safeText(document.getElementById("est-exit-price"), formatINR(current));
+
+    const pnlEl = document.getElementById("est-realized-pnl");
+    if (pnlEl) {
+        pnlEl.textContent = (estPnl >= 0 ? "+" : "") + formatINR(estPnl);
+        pnlEl.className = estPnl >= 0 ? "text-green" : "text-red";
+    }
+    safeText(document.getElementById("est-margin-refund"), formatINR(Math.max(0, totalRefund)));
+}
+
+async function executePositionClose() {
+    if (_isCloseExecuting) return;
+    if (!_activeManageTrade) return;
+
+    const trade = _activeManageTrade;
+    const tradeId = trade.id;
+    const remQty = Number(trade.remaining_quantity || trade.quantity || 1);
+    const input = document.getElementById("custom-close-qty");
+    const closeQty = parseFloat(input?.value || "0");
+
+    if (isNaN(closeQty) || closeQty <= 0) {
+        alert("Please specify a valid quantity to close greater than zero.");
+        return;
+    }
+    if (closeQty > remQty) {
+        alert(`Cannot close more than the remaining quantity (${remQty}).`);
+        return;
+    }
+
+    const isFullClose = (closeQty >= remQty);
+    const confirmMsg = isFullClose 
+        ? `Confirm FULL CLOSE of ${trade.symbol || trade.asset} (${remQty} units)?`
+        : `Confirm partial close of ${closeQty} units of ${trade.symbol || trade.asset}?`;
+
+    if (!confirm(confirmMsg)) return;
+
+    _isCloseExecuting = true;
+    const btn = document.getElementById("btn-confirm-close");
+    const btnText = document.getElementById("btn-confirm-close-text");
+    if (btn) btn.disabled = true;
+    if (btnText) btnText.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Closing...';
+
+    try {
+        const endpoint = isFullClose ? `/api/trades/${tradeId}/close/full` : `/api/trades/${tradeId}/close`;
+        const payload = isFullClose ? {} : { quantity: closeQty };
+
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+            throw new Error(data.detail || data.error || "Failed to execute close order");
+        }
+
+        // Close modal
+        closeManageTradeModal();
+
+        // Refresh all relevant views immediately
+        await Promise.all([
+            loadOpenTrades(),
+            fetchDashboardSummary(),
+            loadTradeHistoryPage(0)
+        ]);
+
+        logToTerminal("Execution Agent", `✅ Position #${tradeId} (${trade.symbol || trade.asset}) ${isFullClose ? "fully" : "partially"} closed. Realized P&L: ${formatINR(data.realized_pnl || 0)}`);
+    } catch (err) {
+        console.error("[ManageTrades] Close execution error:", err);
+        alert(`Close order failed: ${err.message}`);
+    } finally {
+        _isCloseExecuting = false;
+        if (btn) btn.disabled = false;
+        if (btnText) btnText.innerHTML = '<i class="fa-solid fa-check"></i> Confirm Close';
+    }
+}
+window.executePositionClose = executePositionClose;
+
+
 

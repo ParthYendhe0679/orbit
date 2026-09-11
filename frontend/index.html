@@ -22,7 +22,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="style.css?v=orbit_elite_redesign_v1">
+    <link rel="stylesheet" href="style.css?v=orbit_candleshift_v1">
 </head>
 <body>
 
@@ -123,6 +123,11 @@
 
         <!-- Auth Portal Section — Login / Sign Up / OTP Verify -->
         <section id="login-section" class="login-section">
+            <!-- Background Glass Atmosphere Layer (over 3D Candlesticks) -->
+            <div class="login-glass-backdrop"></div>
+            <!-- Background Glass Stage Framing the Center Login Panel -->
+            <div class="login-glass-stage"></div>
+
             <div class="login-container">
                 <div class="card auth-card">
 
@@ -296,9 +301,17 @@
                         <i class="fa-solid fa-bolt"></i>
                         <span>Auto-Trade Bot</span>
                     </button>
+                    <button id="menu-btn-manage-trades" class="sidebar-menu-item">
+                        <i class="fa-solid fa-layer-group"></i>
+                        <span>Manage Trades</span>
+                    </button>
                     <button id="menu-btn-reports" class="sidebar-menu-item">
                         <i class="fa-solid fa-file-invoice-dollar"></i>
                         <span>Reports</span>
+                    </button>
+                    <button id="menu-btn-copilot" class="sidebar-menu-item">
+                        <i class="fa-solid fa-brain"></i>
+                        <span>ORBIT AI Analyst</span>
                     </button>
                 </nav>
 
@@ -321,8 +334,13 @@
                 <!-- TOP HEADER -->
                 <header class="content-header">
                     <h1 id="content-header-title">Dashboard Overview</h1>
-                    <div class="system-time-badge">
-                        <i class="fa-solid fa-clock"></i> <span id="header-time-span">LIVE</span>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <button id="btn-refresh-dashboard" class="glow-btn btn-secondary" style="height:32px;padding:0 12px;font-size:12px;" onclick="refreshAllData(this)" title="Refresh all market prices and live trade positions">
+                            <i class="fa-solid fa-rotate"></i> <span>Refresh</span>
+                        </button>
+                        <div class="system-time-badge">
+                            <i class="fa-solid fa-clock"></i> <span id="header-time-span">LIVE</span>
+                        </div>
                     </div>
                 </header>
 
@@ -336,7 +354,7 @@
                                 <div class="stat-icon text-purple"><i class="fa-solid fa-wallet"></i></div>
                                 <div class="stat-info">
                                     <span class="stat-label">Total Capital Balance</span>
-                                    <h2 class="stat-value text-purple" id="overview-balance">INR ₹10,00,000.00</h2>
+                                    <h2 class="stat-value text-purple" id="overview-balance">--</h2>
                                 </div>
                             </div>
                             <!-- Active Trades Card -->
@@ -352,7 +370,7 @@
                                 <div class="stat-icon text-yellow"><i class="fa-solid fa-chart-line"></i></div>
                                 <div class="stat-info">
                                     <span class="stat-label">Unrealized P&L (Live)</span>
-                                    <h2 class="stat-value text-yellow" id="overview-unrealized-pnl">INR +₹0.00</h2>
+                                    <h2 class="stat-value text-yellow" id="overview-unrealized-pnl">--</h2>
                                 </div>
                             </div>
                             <!-- Realized P&L Card -->
@@ -360,7 +378,7 @@
                                 <div class="stat-icon text-green"><i class="fa-solid fa-money-bill-trend-up"></i></div>
                                 <div class="stat-info">
                                     <span class="stat-label">Realized Profit/Loss</span>
-                                    <h2 class="stat-value text-green" id="overview-realized-pnl">INR +₹0.00</h2>
+                                    <h2 class="stat-value text-green" id="overview-realized-pnl">--</h2>
                                 </div>
                             </div>
                             <!-- Win Rate Card -->
@@ -368,7 +386,7 @@
                                 <div class="stat-icon text-cyan"><i class="fa-solid fa-trophy"></i></div>
                                 <div class="stat-info">
                                     <span class="stat-label">Win Rate %</span>
-                                    <h2 class="stat-value text-cyan" id="overview-win-rate">0.0%</h2>
+                                    <h2 class="stat-value text-cyan" id="overview-win-rate">—</h2>
                                 </div>
                             </div>
                         </div>
@@ -566,6 +584,30 @@
                                                 <button id="btn-draw-sr" class="glow-btn btn-secondary">
                                                     <i class="fa-solid fa-arrows-to-line"></i> S/R Levels
                                                 </button>
+                                                <button id="btn-inspect-strategies" class="glow-btn btn-secondary" onclick="openStrategyModal()">
+                                                    <i class="fa-solid fa-layer-group"></i> 12 Strategies
+                                                </button>
+                                                <button id="btn-inspect-consensus" class="glow-btn btn-secondary" onclick="openConsensusModal()">
+                                                    <i class="fa-solid fa-brain"></i> Consensus Radar
+                                                </button>
+                                                <button id="btn-inspect-brain" class="glow-btn btn-primary" onclick="openBrainModal()">
+                                                    <i class="fa-solid fa-atom"></i> ORBIT Brain
+                                                </button>
+                                                <button id="btn-inspect-risk" class="glow-btn btn-secondary" onclick="openRiskModal()">
+                                                    <i class="fa-solid fa-shield-halved"></i> Risk Guard
+                                                </button>
+                                                <button id="btn-inspect-opportunity" class="glow-btn btn-secondary" onclick="openOpportunityModal()">
+                                                    <i class="fa-solid fa-bullseye"></i> Opportunity
+                                                </button>
+                                                <button id="btn-inspect-decision" class="glow-btn btn-primary" onclick="openDecisionModal()">
+                                                    <i class="fa-solid fa-compass"></i> Market Stance
+                                                </button>
+                                                <button id="btn-inspect-explain" class="glow-btn btn-primary" onclick="openExplainModal()">
+                                                    <i class="fa-solid fa-lightbulb"></i> Market Insights
+                                                </button>
+                                                <button id="btn-open-copilot" class="glow-btn btn-primary btn-copilot" onclick="openCopilotModal()">
+                                                    <i class="fa-solid fa-sparkles"></i> AI Copilot
+                                                </button>
                                                 <button id="stop-btn" class="glow-btn btn-danger">
                                                     <i class="fa-solid fa-stop"></i> Stop
                                                 </button>
@@ -619,6 +661,773 @@
                                                 <button class="glow-btn btn-primary" onclick="confirmTrade()">
                                                     <i class="fa-solid fa-check"></i> Place Trade
                                                 </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ STRATEGY SUITE INSPECTION MODAL (PHASE 4) ══ -->
+                                    <div id="strategy-inspect-modal" class="trade-confirm-overlay hidden">
+                                        <div class="strategy-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <i class="fa-solid fa-layer-group tc-icon" style="margin-bottom:0;"></i>
+                                                    <div>
+                                                        <h3 style="margin:0;">12-Strategy Quantitative Suite</h3>
+                                                        <p class="tc-subtitle" id="strat-modal-subtitle" style="margin:0;">Evaluating real-time market setups</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshStrategyModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeStrategyModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <!-- Summary Tally Strip -->
+                                            <div id="strat-modal-summary" style="padding:10px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;font-size:11.5px;background:var(--surface-0);">
+                                                <span id="strat-tally-text"><span class="status-dot green-glow"></span> Ready to evaluate strategies</span>
+                                                <span id="strat-time-badge" style="color:var(--text-3);font-family:var(--font-mono);">-- ms</span>
+                                            </div>
+                                            <!-- Scrollable Strategies List -->
+                                            <div class="strategy-modal-body" id="strategy-modal-grid">
+                                                <div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">
+                                                    <i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Evaluating quantitative strategies...
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ CONSENSUS RADAR INSPECTION MODAL (PHASE 5) ══ -->
+                                    <div id="consensus-inspect-modal" class="trade-confirm-overlay hidden">
+                                        <div class="consensus-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <i class="fa-solid fa-brain tc-icon" style="margin-bottom:0;color:var(--accent);"></i>
+                                                    <div>
+                                                        <h3 style="margin:0;">ORBIT Consensus Engine</h3>
+                                                        <p class="tc-subtitle" id="consensus-modal-subtitle" style="margin:0;">Unified Intelligence &amp; Quantitative Market View</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshConsensusModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeConsensusModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Top Consensus Hero Banner -->
+                                            <div id="consensus-hero-banner" class="consensus-hero-banner">
+                                                <div class="consensus-hero-left">
+                                                    <span class="consensus-signal-pill" id="consensus-signal-pill">STANDBY</span>
+                                                    <div class="consensus-view-title" id="consensus-view-title">Evaluating Market Evidence...</div>
+                                                    <div class="consensus-view-sub" id="consensus-view-sub">Aggregating Phase 3 Agents &amp; Phase 4 Strategies</div>
+                                                </div>
+                                                <div class="consensus-hero-metrics">
+                                                    <div class="consensus-metric-item">
+                                                        <span class="consensus-metric-lbl">Strength</span>
+                                                        <span class="consensus-metric-val" id="consensus-strength-val">--%</span>
+                                                    </div>
+                                                    <div class="consensus-metric-item">
+                                                        <span class="consensus-metric-lbl">Agreement</span>
+                                                        <span class="consensus-metric-val" id="consensus-agreement-val">--%</span>
+                                                    </div>
+                                                    <div class="consensus-metric-item">
+                                                        <span class="consensus-metric-lbl">Level</span>
+                                                        <span class="consensus-metric-val" id="consensus-agreement-level">--</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Force Bar Comparison: Bull vs Bear vs Neutral -->
+                                            <div class="consensus-force-section">
+                                                <div class="consensus-force-labels">
+                                                    <span class="text-green" id="consensus-bull-force-lbl"><i class="fa-solid fa-arrow-up"></i> Bullish 0%</span>
+                                                    <span class="text-3" id="consensus-neutral-force-lbl">Neutral 0%</span>
+                                                    <span class="text-red" id="consensus-bear-force-lbl">Bearish 0% <i class="fa-solid fa-arrow-down"></i></span>
+                                                </div>
+                                                <div class="consensus-force-bar-track">
+                                                    <div class="consensus-force-segment bull" id="consensus-bar-bull" style="width: 0%;"></div>
+                                                    <div class="consensus-force-segment neut" id="consensus-bar-neut" style="width: 100%;"></div>
+                                                    <div class="consensus-force-segment bear" id="consensus-bar-bear" style="width: 0%;"></div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Summary Tally Strip -->
+                                            <div id="consensus-modal-summary" style="padding:8px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;font-size:11.5px;background:var(--surface-0);">
+                                                <span id="consensus-tally-text"><span class="status-dot green-glow"></span> 7 Agents + 12 Strategies Ready</span>
+                                                <span id="consensus-time-badge" style="color:var(--text-3);font-family:var(--font-mono);">-- ms</span>
+                                            </div>
+
+                                            <!-- Scrollable Evidence & Details Body -->
+                                            <div class="consensus-modal-body" id="consensus-modal-body">
+                                                <div style="padding:24px;text-align:center;color:var(--text-3);font-size:12px;">
+                                                    <i class="fa-solid fa-spinner fa-spin" style="margin-right:6px;"></i> Synthesizing unified market consensus...
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT BRAIN CENTRAL INTELLIGENCE MODAL (PHASE 6) ══ -->
+                                    <div id="brain-inspect-modal" class="trade-confirm-overlay hidden">
+                                        <div class="brain-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <div class="brain-header-icon">
+                                                        <i class="fa-solid fa-atom"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT Brain 
+                                                            <span class="brain-status-tag" id="brain-status-tag">READY</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="brain-modal-subtitle" style="margin:0;">Central Intelligence Orchestration Dossier</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshBrainModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeBrainModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Executive Hero Banner -->
+                                            <div class="brain-hero-banner">
+                                                <div class="brain-hero-left">
+                                                    <div style="display:flex;align-items:center;gap:8px;">
+                                                        <span class="consensus-signal-pill" id="brain-bias-pill">NEUTRAL</span>
+                                                        <span class="brain-conviction-pill" id="brain-conviction-pill">Strength: --%</span>
+                                                        <span class="brain-tier-pill" id="brain-tier-pill">COMPLETE 100%</span>
+                                                    </div>
+                                                    <p class="brain-exec-summary-text" id="brain-exec-summary-text">
+                                                        Synthesizing multi-system intelligence across market data, 7 AI agents, 12 strategies, and consensus...
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <!-- Scrollable Intelligence Body -->
+                                            <div class="brain-modal-body" id="brain-modal-body">
+                                                <!-- 4-Grid Quad Intelligence Matrix -->
+                                                <div class="brain-quad-grid">
+                                                    <!-- 1. Market Overview -->
+                                                    <div class="brain-card">
+                                                        <div class="brain-card-header">
+                                                            <div class="brain-card-title">
+                                                                <i class="fa-solid fa-chart-line text-cyan"></i>
+                                                                <span>Market Overview</span>
+                                                            </div>
+                                                            <span class="brain-tag" id="brain-mkt-regime">REGIME</span>
+                                                        </div>
+                                                        <div class="brain-metrics-row">
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Price</span>
+                                                                <strong class="brain-sub-val" id="brain-mkt-price">--</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Change</span>
+                                                                <strong class="brain-sub-val" id="brain-mkt-change">--</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">ATR (14)</span>
+                                                                <strong class="brain-sub-val" id="brain-mkt-atr">--</strong>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- 2. AI Agent Intelligence -->
+                                                    <div class="brain-card">
+                                                        <div class="brain-card-header">
+                                                            <div class="brain-card-title">
+                                                                <i class="fa-solid fa-robot text-purple"></i>
+                                                                <span>AI Agent Crew (7)</span>
+                                                            </div>
+                                                            <span class="brain-tag" id="brain-agent-leading">LEADING</span>
+                                                        </div>
+                                                        <div class="brain-metrics-row">
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Bullish</span>
+                                                                <strong class="brain-sub-val text-green" id="brain-agent-bull">0</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Neutral</span>
+                                                                <strong class="brain-sub-val text-3" id="brain-agent-neut">0</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Bearish</span>
+                                                                <strong class="brain-sub-val text-red" id="brain-agent-bear">0</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Avg Conf</span>
+                                                                <strong class="brain-sub-val" id="brain-agent-conf">--%</strong>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- 3. Quantitative Strategies -->
+                                                    <div class="brain-card">
+                                                        <div class="brain-card-header">
+                                                            <div class="brain-card-title">
+                                                                <i class="fa-solid fa-layer-group text-yellow"></i>
+                                                                <span>Strategy Suite (12)</span>
+                                                            </div>
+                                                            <span class="brain-tag" id="brain-strat-setups-tag">0 SETUPS</span>
+                                                        </div>
+                                                        <div class="brain-metrics-row">
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Active Setups</span>
+                                                                <strong class="brain-sub-val text-yellow" id="brain-strat-active-count">0</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Bull Setups</span>
+                                                                <strong class="brain-sub-val text-green" id="brain-strat-bull">0</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Bear Setups</span>
+                                                                <strong class="brain-sub-val text-red" id="brain-strat-bear">0</strong>
+                                                            </div>
+                                                        </div>
+                                                        <div id="brain-strat-active-list" class="brain-active-pills"></div>
+                                                    </div>
+
+                                                    <!-- 4. Consensus Synthesis -->
+                                                    <div class="brain-card">
+                                                        <div class="brain-card-header">
+                                                            <div class="brain-card-title">
+                                                                <i class="fa-solid fa-brain text-green"></i>
+                                                                <span>Consensus Synthesis</span>
+                                                            </div>
+                                                            <span class="brain-tag" id="brain-cons-status-tag">READY</span>
+                                                        </div>
+                                                        <div class="brain-metrics-row">
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Direction</span>
+                                                                <strong class="brain-sub-val" id="brain-cons-sig">--</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Strength</span>
+                                                                <strong class="brain-sub-val" id="brain-cons-strength">--%</strong>
+                                                            </div>
+                                                            <div class="brain-submetric">
+                                                                <span class="brain-sub-lbl">Agreement</span>
+                                                                <strong class="brain-sub-val" id="brain-cons-agree">--%</strong>
+                                                            </div>
+                                                        </div>
+                                                        <div class="brain-market-view-line" id="brain-market-view-line">—</div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Key Evidence Extraction Section -->
+                                                <div id="brain-evidence-section" style="display:flex;flex-direction:column;gap:10px;">
+                                                    <!-- Injected dynamically: Key Supporting & Key Conflicting cards -->
+                                                </div>
+
+                                                <!-- Diagnostics Footer Strip -->
+                                                <div class="brain-diagnostics-strip" id="brain-diagnostics-strip">
+                                                    <span><i class="fa-solid fa-database"></i> Market Data Reused: <strong class="text-green">YES</strong></span>
+                                                    <span><i class="fa-solid fa-bolt"></i> Latency: <strong id="brain-diag-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-shield-halved"></i> Completeness: <strong id="brain-diag-comp">--%</strong></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT RISK GUARD SAFETY EVALUATION MODAL (PHASE 7) ══ -->
+                                    <div id="risk-guard-modal" class="trade-confirm-overlay hidden">
+                                        <div class="risk-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <div class="risk-header-icon">
+                                                        <i class="fa-solid fa-shield-halved"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT Risk Guard 
+                                                            <span class="risk-status-tag" id="risk-status-tag">READY</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="risk-modal-subtitle" style="margin:0;">Analysis Quality &amp; Market Safety Audit</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshRiskModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeRiskModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Executive Hero Banner -->
+                                            <div class="risk-hero-banner" id="risk-hero-banner">
+                                                <div class="risk-hero-left">
+                                                    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                                                        <span class="risk-level-pill" id="risk-level-pill">LOW</span>
+                                                        <strong style="font-size:13px;letter-spacing:0.5px;color:var(--text-1);" id="risk-hero-title">Controlled Risk Profile</strong>
+                                                    </div>
+                                                    <div class="risk-hero-summary" id="risk-hero-summary">Evaluating multi-dimensional safety vectors...</div>
+                                                </div>
+                                                <div class="risk-hero-score-box">
+                                                    <div class="risk-score-label">OVERALL RISK SCORE</div>
+                                                    <div class="risk-score-number" id="risk-score-number">--<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span></div>
+                                                    <div class="risk-meter-bar-track">
+                                                        <div class="risk-meter-bar-fill" id="risk-meter-bar-fill" style="width: 0%;"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Scrollable Modal Body -->
+                                            <div class="risk-modal-body" id="risk-modal-body">
+                                                
+                                                <!-- 5-Dimension Evaluation Grid -->
+                                                <div class="risk-dimensions-title"><i class="fa-solid fa-cubes-stacked"></i> 5-Pillar Risk Evaluation</div>
+                                                <div class="risk-dimensions-grid" id="risk-dimensions-grid">
+                                                    <!-- Injected dynamically via JS -->
+                                                </div>
+
+                                                <!-- Risk Factors (Warnings) & Safety Factors (Stabilizers) -->
+                                                <div class="risk-factors-split-grid">
+                                                    <div class="risk-factors-column">
+                                                        <div class="risk-column-header text-red">
+                                                            <i class="fa-solid fa-triangle-exclamation"></i> Risk Factors &amp; Warnings (<span id="risk-factors-count">0</span>)
+                                                        </div>
+                                                        <div class="risk-factors-list" id="risk-factors-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                    <div class="risk-factors-column">
+                                                        <div class="risk-column-header text-green">
+                                                            <i class="fa-solid fa-circle-check"></i> Stabilizing Safety Factors (<span id="safety-factors-count">0</span>)
+                                                        </div>
+                                                        <div class="risk-factors-list" id="safety-factors-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Diagnostics Footer Strip -->
+                                                <div class="risk-diagnostics-strip" id="risk-diagnostics-strip">
+                                                    <span><i class="fa-solid fa-atom"></i> Upstream Brain Reused: <strong class="text-green">YES</strong></span>
+                                                    <span><i class="fa-solid fa-stopwatch"></i> Guard Latency: <strong id="risk-diag-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-layer-group"></i> Dimensions: <strong id="risk-diag-dims">5/5</strong></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT TRADE OPPORTUNITY EVALUATION MODAL (PHASE 8) ══ -->
+                                    <div id="opportunity-eval-modal" class="trade-confirm-overlay hidden">
+                                        <div class="opp-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <div class="opp-header-icon">
+                                                        <i class="fa-solid fa-bullseye"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT Opportunity Engine
+                                                            <span class="opp-status-tag" id="opp-status-tag">READY</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="opp-modal-subtitle" style="margin:0;">Multi-System Confluence &amp; Setup Quality Assessment</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshOpportunityModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeOpportunityModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Executive Hero Banner -->
+                                            <div class="opp-hero-banner" id="opp-hero-banner">
+                                                <div class="opp-hero-left">
+                                                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                                                        <span class="opp-level-pill" id="opp-level-pill">HIGH</span>
+                                                        <span class="opp-bias-pill" id="opp-bias-pill">BULLISH</span>
+                                                        <strong style="font-size:13px;letter-spacing:0.5px;color:var(--text-1);" id="opp-hero-title">Strong Analytical Confluence</strong>
+                                                    </div>
+                                                    <div class="opp-hero-summary" id="opp-hero-summary">Synthesizing consensus, strategies, agents, and risk headroom...</div>
+                                                </div>
+                                                <div class="opp-hero-score-box">
+                                                    <div class="opp-score-label">OPPORTUNITY SCORE</div>
+                                                    <div class="opp-score-number" id="opp-score-number">--<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span></div>
+                                                    <div class="opp-meter-bar-track">
+                                                        <div class="opp-meter-bar-fill" id="opp-meter-bar-fill" style="width: 0%;"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Scrollable Modal Body -->
+                                            <div class="opp-modal-body" id="opp-modal-body">
+                                                
+                                                <!-- 5-Dimension Opportunity Grid -->
+                                                <div class="opp-dimensions-title"><i class="fa-solid fa-cubes"></i> 5-Pillar Opportunity Breakdown</div>
+                                                <div class="opp-dimensions-grid" id="opp-dimensions-grid">
+                                                    <!-- Injected dynamically via JS -->
+                                                </div>
+
+                                                <!-- Split Grid: Strength Boosters vs Weakness Headwinds -->
+                                                <div class="opp-factors-split-grid">
+                                                    <div class="opp-factors-column">
+                                                        <div class="opp-column-header text-green">
+                                                            <i class="fa-solid fa-arrow-trend-up"></i> Confluence Boosters (<span id="opp-strength-count">0</span>)
+                                                        </div>
+                                                        <div class="opp-factors-list" id="opp-strength-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                    <div class="opp-factors-column">
+                                                        <div class="opp-column-header text-red">
+                                                            <i class="fa-solid fa-shield-halved"></i> Opportunity Headwinds (<span id="opp-weakness-count">0</span>)
+                                                        </div>
+                                                        <div class="opp-factors-list" id="opp-weakness-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Diagnostics Footer Strip -->
+                                                <div class="opp-diagnostics-strip" id="opp-diagnostics-strip">
+                                                    <span><i class="fa-solid fa-atom"></i> Upstream Contexts Reused: <strong class="text-green">YES</strong></span>
+                                                    <span><i class="fa-solid fa-bolt"></i> Opp Latency: <strong id="opp-diag-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-stopwatch"></i> Total Pipeline: <strong id="opp-diag-total">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-layer-group"></i> Dimensions: <strong id="opp-diag-dims">5/5</strong></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT MARKET DECISION ENGINE MODAL (PHASE 9) ══ -->
+                                    <div id="decision-eval-modal" class="trade-confirm-overlay hidden">
+                                        <div class="decision-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <div class="decision-header-icon">
+                                                        <i class="fa-solid fa-compass"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT Decision Engine
+                                                            <span class="decision-status-tag" id="decision-status-tag">READY</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="decision-modal-subtitle" style="margin:0;">Evidence-Based Analytical Market Stance Synthesis</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-primary" style="height:30px;padding:0 10px;font-size:11px;" onclick="openCopilotModal()">
+                                                        <i class="fa-solid fa-sparkles"></i> Ask Copilot
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshDecisionModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeDecisionModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Executive Hero Banner -->
+                                            <div class="decision-hero-banner" id="decision-hero-banner">
+                                                <div class="decision-hero-left">
+                                                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                                                        <span class="decision-stance-badge" id="decision-stance-badge">BULLISH</span>
+                                                        <span class="decision-clarity-tag" id="decision-clarity-tag">CLEAR</span>
+                                                        <strong style="font-size:13px;letter-spacing:0.5px;color:var(--text-1);" id="decision-hero-title">Authoritative Market Stance</strong>
+                                                    </div>
+                                                    <div class="decision-hero-summary" id="decision-hero-summary">Synthesizing consensus direction, opportunity setup quality, and risk constraints...</div>
+                                                </div>
+                                                <div class="decision-hero-score-box">
+                                                    <div class="decision-score-label">EVIDENCE CONFIDENCE</div>
+                                                    <div class="decision-score-number" id="decision-confidence-number">--<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span></div>
+                                                    <div class="decision-meter-bar-track">
+                                                        <div class="decision-meter-bar-fill" id="decision-meter-bar-fill" style="width: 0%;"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Scrollable Modal Body -->
+                                            <div class="decision-modal-body" id="decision-modal-body">
+                                                
+                                                <!-- Upstream Input Matrix (Quad Card Grid) -->
+                                                <div class="decision-section-title"><i class="fa-solid fa-cubes"></i> Multi-System Intelligence Input Summary</div>
+                                                <div class="decision-input-grid" id="decision-input-grid">
+                                                    <div class="decision-input-card">
+                                                        <div class="decision-input-card-title"><i class="fa-solid fa-brain text-cyan"></i> Consensus</div>
+                                                        <div class="decision-input-val" id="dec-in-consensus">--</div>
+                                                        <div class="decision-input-sub" id="dec-in-consensus-sub">Strength: -- | Agreement: --%</div>
+                                                    </div>
+                                                    <div class="decision-input-card">
+                                                        <div class="decision-input-card-title"><i class="fa-solid fa-shield-halved text-yellow"></i> Risk Guard</div>
+                                                        <div class="decision-input-val" id="dec-in-risk">--</div>
+                                                        <div class="decision-input-sub" id="dec-in-risk-sub">Score: --/100</div>
+                                                    </div>
+                                                    <div class="decision-input-card">
+                                                        <div class="decision-input-card-title"><i class="fa-solid fa-bullseye text-green"></i> Opportunity</div>
+                                                        <div class="decision-input-val" id="dec-in-opp">--</div>
+                                                        <div class="decision-input-sub" id="dec-in-opp-sub">Confluence: --/100</div>
+                                                    </div>
+                                                    <div class="decision-input-card">
+                                                        <div class="decision-input-card-title"><i class="fa-solid fa-atom text-purple"></i> Brain Completeness</div>
+                                                        <div class="decision-input-val" id="dec-in-pipeline">--</div>
+                                                        <div class="decision-input-sub" id="dec-in-pipeline-sub">Tier: --</div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Split Grid: Primary Evidence vs Constraints & Conflicts -->
+                                                <div class="decision-factors-split-grid">
+                                                    <div class="decision-factors-column">
+                                                        <div class="decision-column-header text-green">
+                                                            <i class="fa-solid fa-circle-check"></i> Primary &amp; Supporting Evidence (<span id="decision-evidence-count">0</span>)
+                                                        </div>
+                                                        <div class="decision-factors-list" id="decision-evidence-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                    <div class="decision-factors-column">
+                                                        <div class="decision-column-header text-red">
+                                                            <i class="fa-solid fa-shield-halved"></i> Constraints, Conflicts &amp; Warnings (<span id="decision-constraints-count">0</span>)
+                                                        </div>
+                                                        <div class="decision-factors-list" id="decision-constraints-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- Diagnostics Footer Strip -->
+                                                <div class="decision-diagnostics-strip" id="decision-diagnostics-strip">
+                                                    <span><i class="fa-solid fa-atom"></i> Upstream Stack Reused: <strong class="text-green">YES</strong></span>
+                                                    <span><i class="fa-solid fa-bolt"></i> Decision Latency: <strong id="dec-diag-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-stopwatch"></i> Total Pipeline: <strong id="dec-diag-total">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-layer-group"></i> Clarity Tier: <strong id="dec-diag-clarity">--</strong></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT EXPLAINABILITY & MARKET INSIGHTS MODAL (PHASE 10) ══ -->
+                                    <div id="explain-eval-modal" class="trade-confirm-overlay hidden">
+                                        <div class="explain-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:10px;">
+                                                    <div class="explain-header-icon">
+                                                        <i class="fa-solid fa-lightbulb"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT Explainability &amp; Market Insights
+                                                            <span class="explain-status-tag" id="explain-status-tag">READY</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="explain-modal-subtitle" style="margin:0;">Transparent, Traceable Analytical Rationale &amp; Evidence Synthesis</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-primary" style="height:30px;padding:0 10px;font-size:11px;" onclick="openCopilotModal()">
+                                                        <i class="fa-solid fa-sparkles"></i> Ask Copilot
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="refreshExplainModal()">
+                                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeExplainModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Executive Hero Banner -->
+                                            <div class="explain-hero-banner" id="explain-hero-banner">
+                                                <div class="explain-hero-left">
+                                                    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+                                                        <span class="explain-stance-badge" id="explain-stance-badge">BULLISH</span>
+                                                        <span class="explain-clarity-tag" id="explain-clarity-tag">CLEAR</span>
+                                                        <strong style="font-size:13px;letter-spacing:0.5px;color:var(--text-1);" id="explain-hero-title">Analytical Stance Explanation</strong>
+                                                    </div>
+                                                    <div class="explain-headline" id="explain-headline">Synthesizing institutional explanation across all intelligence subsystems...</div>
+                                                    
+                                                    <!-- Core Thesis ("WHY?") Box -->
+                                                    <div class="explain-thesis-box" id="explain-thesis-box">
+                                                        <div class="explain-thesis-title"><i class="fa-solid fa-key text-yellow"></i> Core Analytical Thesis (Why ORBIT Reached This Conclusion)</div>
+                                                        <ul class="explain-thesis-list" id="explain-thesis-list">
+                                                            <li>Consensus, strategy setups, and risk constraints are actively being evaluated...</li>
+                                                        </ul>
+                                                    </div>
+                                                </div>
+                                                <div class="explain-hero-score-box">
+                                                    <div class="explain-score-label">EVIDENCE CONFIDENCE</div>
+                                                    <div class="explain-score-number" id="explain-confidence-number">--<span style="font-size:13px;color:var(--text-3);font-weight:400;">/100</span></div>
+                                                    <div class="explain-meter-bar-track">
+                                                        <div class="explain-meter-bar-fill" id="explain-meter-bar-fill" style="width: 0%;"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Scrollable Modal Body -->
+                                            <div class="explain-modal-body" id="explain-modal-body">
+                                                
+                                                <!-- Upstream Input Telemetry Strip -->
+                                                <div class="explain-section-title"><i class="fa-solid fa-cubes"></i> Ingested Intelligence Stack Snapshot</div>
+                                                <div class="explain-input-grid" id="explain-input-grid">
+                                                    <div class="explain-input-card">
+                                                        <div class="explain-input-card-title"><i class="fa-solid fa-brain text-cyan"></i> Consensus</div>
+                                                        <div class="explain-input-val" id="exp-in-consensus">--</div>
+                                                        <div class="explain-input-sub" id="exp-in-consensus-sub">Strength: -- | Agreement: --%</div>
+                                                    </div>
+                                                    <div class="explain-input-card">
+                                                        <div class="explain-input-card-title"><i class="fa-solid fa-shield-halved text-yellow"></i> Risk Guard</div>
+                                                        <div class="explain-input-val" id="exp-in-risk">--</div>
+                                                        <div class="explain-input-sub" id="exp-in-risk-sub">Score: --/100</div>
+                                                    </div>
+                                                    <div class="explain-input-card">
+                                                        <div class="explain-input-card-title"><i class="fa-solid fa-bullseye text-green"></i> Opportunity</div>
+                                                        <div class="explain-input-val" id="exp-in-opp">--</div>
+                                                        <div class="explain-input-sub" id="exp-in-opp-sub">Confluence: --/100</div>
+                                                    </div>
+                                                    <div class="explain-input-card">
+                                                        <div class="explain-input-card-title"><i class="fa-solid fa-atom text-purple"></i> Brain Completeness</div>
+                                                        <div class="explain-input-val" id="exp-in-pipeline">--</div>
+                                                        <div class="explain-input-sub" id="exp-in-pipeline-sub">Tier: --</div>
+                                                    </div>
+                                                </div>
+
+                                                <!-- 3-Column Traceable Insight Matrix -->
+                                                <div class="explain-factors-split-grid">
+                                                    
+                                                    <!-- Column 1: Primary & Supporting Evidence -->
+                                                    <div class="explain-factors-column">
+                                                        <div class="explain-column-header text-green">
+                                                            <i class="fa-solid fa-circle-check"></i> Traceable Supporting Evidence (<span id="explain-evidence-count">0</span>)
+                                                        </div>
+                                                        <div class="explain-factors-list" id="explain-evidence-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- Column 2: Conflicts & Cross-System Divergences -->
+                                                    <div class="explain-factors-column">
+                                                        <div class="explain-column-header text-red">
+                                                            <i class="fa-solid fa-triangle-exclamation"></i> Model Conflicts &amp; Clashes (<span id="explain-conflicts-count">0</span>)
+                                                        </div>
+                                                        <div class="explain-factors-list" id="explain-conflicts-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+
+                                                    <!-- Column 3: Risk Constraints & Uncertainties -->
+                                                    <div class="explain-factors-column">
+                                                        <div class="explain-column-header text-yellow">
+                                                            <i class="fa-solid fa-shield-halved"></i> Constraints &amp; Uncertainties (<span id="explain-risks-count">0</span>)
+                                                        </div>
+                                                        <div class="explain-factors-list" id="explain-risks-list">
+                                                            <!-- Injected via JS -->
+                                                        </div>
+                                                    </div>
+
+                                                </div>
+
+                                                <!-- Diagnostics Footer Strip -->
+                                                <div class="explain-diagnostics-strip" id="explain-diagnostics-strip">
+                                                    <span><i class="fa-solid fa-atom"></i> Upstream Stack Reused: <strong class="text-green">YES</strong></span>
+                                                    <span><i class="fa-solid fa-bolt"></i> Explain Latency: <strong id="exp-diag-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-compass"></i> Decision Latency: <strong id="exp-diag-dec-latency">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-stopwatch"></i> Total Pipeline: <strong id="exp-diag-total">-- ms</strong></span>
+                                                    <span><i class="fa-solid fa-certificate"></i> Traceability: <strong class="text-cyan">VERIFIED</strong></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- ══ ORBIT AI MARKET INTELLIGENCE COPILOT MODAL (PHASE 12) ══ -->
+                                    <div id="orbit-copilot-modal" class="trade-confirm-overlay hidden">
+                                        <div class="copilot-modal-card">
+                                            <div class="tc-header" style="flex-direction:row;justify-content:space-between;align-items:center;text-align:left;">
+                                                <div style="display:flex;align-items:center;gap:12px;">
+                                                    <div class="copilot-header-icon">
+                                                        <i class="fa-solid fa-sparkles"></i>
+                                                    </div>
+                                                    <div>
+                                                        <h3 style="margin:0;display:flex;align-items:center;gap:8px;">
+                                                            ORBIT AI Market Intelligence Copilot
+                                                            <span class="copilot-symbol-pill" id="copilot-active-symbol-badge">BTC-USD (1d)</span>
+                                                            <span class="copilot-status-pill" id="copilot-status-indicator">GROUNDED</span>
+                                                        </h3>
+                                                        <p class="tc-subtitle" id="copilot-subtitle" style="margin:0;">Context-Aware Reasoning &amp; Question Answering Grounded in ORBIT Intelligence</p>
+                                                    </div>
+                                                </div>
+                                                <div style="display:flex;align-items:center;gap:8px;">
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="clearCopilotChat()" title="Reset Conversation">
+                                                        <i class="fa-solid fa-broom"></i> Reset Chat
+                                                    </button>
+                                                    <button class="glow-btn btn-secondary" style="height:30px;padding:0 10px;font-size:11px;" onclick="closeCopilotModal()">
+                                                        <i class="fa-solid fa-xmark"></i>
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <!-- Context Intelligence Telemetry Strip -->
+                                            <div class="copilot-telemetry-banner" id="copilot-telemetry-banner">
+                                                <div class="copilot-telemetry-item">
+                                                    <span class="copilot-tel-lbl">STANCE</span>
+                                                    <span class="copilot-stance-tag" id="copilot-tel-stance">BULLISH</span>
+                                                </div>
+                                                <div class="copilot-telemetry-item">
+                                                    <span class="copilot-tel-lbl">CONFIDENCE</span>
+                                                    <span class="copilot-tel-val text-green" id="copilot-tel-confidence">--%</span>
+                                                </div>
+                                                <div class="copilot-telemetry-item">
+                                                    <span class="copilot-tel-lbl">RISK TIER</span>
+                                                    <span class="copilot-tel-val text-yellow" id="copilot-tel-risk">MODERATE</span>
+                                                </div>
+                                                <div class="copilot-telemetry-item">
+                                                    <span class="copilot-tel-lbl">OPPORTUNITY</span>
+                                                    <span class="copilot-tel-val text-cyan" id="copilot-tel-opportunity">--/100</span>
+                                                </div>
+                                                <div class="copilot-telemetry-item" style="margin-left:auto;">
+                                                    <span class="copilot-tel-lbl">ORBIT STACK</span>
+                                                    <span class="copilot-tel-val text-purple"><i class="fa-solid fa-atom"></i> PHASES 2-10 REUSED</span>
+                                                </div>
+                                            </div>
+
+                                            <!-- Conversation Stream -->
+                                            <div class="copilot-chat-stream" id="copilot-chat-stream">
+                                                <!-- Welcome / Initial Seed Message -->
+                                                <div class="copilot-msg-card copilot-assistant">
+                                                    <div class="copilot-msg-header">
+                                                        <i class="fa-solid fa-robot text-green"></i>
+                                                        <strong>ORBIT Copilot</strong>
+                                                        <span class="copilot-msg-time">Active</span>
+                                                    </div>
+                                                    <div class="copilot-msg-body">
+                                                        Hello! I am your <strong>ORBIT Market Intelligence Copilot</strong>. I reason directly over the multi-system quantitative analysis currently generated for <strong id="copilot-welcome-symbol">BTC-USD</strong>. Ask me why a stance was chosen, what risks exist, where AI agents disagree, or request a simplified explanation.
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <!-- Suggested Question Chips -->
+                                            <div class="copilot-chips-container" id="copilot-chips-container">
+                                                <span class="copilot-chips-label"><i class="fa-solid fa-lightbulb"></i> Suggested:</span>
+                                                <button class="copilot-chip" onclick="askCopilotPreset('Why is the market stance chosen for this asset?')">Why this stance?</button>
+                                                <button class="copilot-chip" onclick="askCopilotPreset('What are the biggest analytical risks and constraints?')">What are the risks?</button>
+                                                <button class="copilot-chip" onclick="askCopilotPreset('What do the AI specialist agents disagree on?')">Agent disagreements?</button>
+                                                <button class="copilot-chip" onclick="askCopilotPreset('Explain this ORBIT analysis simply for a beginner.')">Explain simply</button>
+                                                <button class="copilot-chip" onclick="askCopilotPreset('What market conditions or levels would invalidate this analysis?')">What invalidates this?</button>
+                                            </div>
+
+                                            <!-- Input Bar -->
+                                            <div class="copilot-input-bar">
+                                                <div class="copilot-input-wrapper">
+                                                    <input type="text" id="copilot-chat-input" class="copilot-chat-input" placeholder="Ask ORBIT Copilot about this analysis... (Press Enter)" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendCopilotMessage();}">
+                                                    <button id="copilot-send-btn" class="glow-btn btn-primary copilot-send-btn" onclick="sendCopilotMessage()">
+                                                        <i class="fa-solid fa-paper-plane"></i> Ask
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -881,7 +1690,189 @@
                         </div>
                     </div><!-- /tab-content-autotrade -->
 
-                    <!-- TAB 4: REPORTS PANE -->
+                    <!-- TAB 4: MANAGE TRADES -->
+                    <div id="tab-content-manage-trades" class="tab-content hidden-tab">
+                        <div class="manage-trades-container">
+                            <!-- Page Header -->
+                            <div class="manage-trades-header">
+                                <div class="manage-trades-title-wrap">
+                                    <h1 class="manage-trades-title">MANAGE TRADES</h1>
+                                    <span class="manage-trades-sub">Live Position Supervision &amp; Execution Control</span>
+                                </div>
+                                <div class="manage-trades-header-actions">
+                                    <button id="btn-refresh-trades" class="glow-btn btn-secondary" onclick="loadManageTradesData(this)">
+                                        <i class="fa-solid fa-rotate"></i> <span>Refresh</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Sub-tabs bar -->
+                            <div class="manage-subtabs-bar">
+                                <button id="subtab-btn-open-trades" class="manage-subtab-btn active" onclick="switchManageSubTab('open')">
+                                    <i class="fa-solid fa-chart-line"></i>
+                                    <span>OPEN TRADES</span>
+                                    <span class="subtab-count-badge" id="manage-open-count">0</span>
+                                </button>
+                                <button id="subtab-btn-pending-orders" class="manage-subtab-btn" onclick="switchManageSubTab('pending')">
+                                    <i class="fa-solid fa-clock"></i>
+                                    <span>PENDING ORDERS</span>
+                                    <span class="subtab-count-badge" id="manage-pending-count">0</span>
+                                </button>
+                                <button id="subtab-btn-trade-history" class="manage-subtab-btn" onclick="switchManageSubTab('history')">
+                                    <i class="fa-solid fa-clock-rotate-left"></i>
+                                    <span>TRADE HISTORY</span>
+                                    <span class="subtab-count-badge" id="manage-history-count">0</span>
+                                </button>
+                            </div>
+
+                            <!-- Sub-tab 1: OPEN TRADES -->
+                            <div id="manage-subtab-open" class="manage-subtab-panel">
+                                <div class="card manage-table-card">
+                                    <div class="card-header">
+                                        <div class="card-title">
+                                            <i class="fa-solid fa-layer-group header-icon"></i>
+                                            <span>Currently Active Positions</span>
+                                        </div>
+                                        <div class="manage-live-indicator" id="manage-live-status">
+                                            <span class="live-indicator-dot pulse"></span>
+                                            <span id="manage-live-text">● LIVE DATA</span>
+                                        </div>
+                                    </div>
+                                    <div class="manage-table-wrap">
+                                        <table class="orbit-terminal-table" id="open-trades-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>SYMBOL</th>
+                                                    <th>MARKET</th>
+                                                    <th>SIDE</th>
+                                                    <th>STATUS</th>
+                                                    <th>ENTRY PRICE</th>
+                                                    <th>CURRENT PRICE</th>
+                                                    <th>QUANTITY</th>
+                                                    <th>LEVERAGE</th>
+                                                    <th>POSITION SIZE</th>
+                                                    <th>MARGIN USED</th>
+                                                    <th>UNREALIZED P&amp;L</th>
+                                                    <th>OPEN TIME</th>
+                                                    <th>ACTION</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="open-trades-tbody">
+                                                <tr>
+                                                    <td colspan="13" class="table-empty-message">Loading active positions...</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Sub-tab 2: PENDING ORDERS -->
+                            <div id="manage-subtab-pending" class="manage-subtab-panel hidden-subtab">
+                                <div class="card manage-table-card">
+                                    <div class="card-header">
+                                        <div class="card-title">
+                                            <i class="fa-solid fa-clock header-icon"></i>
+                                            <span>Pending Unfilled Orders</span>
+                                        </div>
+                                    </div>
+                                    <div class="manage-table-wrap">
+                                        <table class="orbit-terminal-table" id="pending-orders-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>ORDER ID</th>
+                                                    <th>SYMBOL</th>
+                                                    <th>TYPE</th>
+                                                    <th>QUANTITY</th>
+                                                    <th>TARGET ENTRY</th>
+                                                    <th>STOP LOSS</th>
+                                                    <th>PROFIT TARGET</th>
+                                                    <th>PLACED AT</th>
+                                                    <th>STATUS</th>
+                                                    <th>ACTION</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="pending-orders-tbody">
+                                                <tr>
+                                                    <td colspan="10" class="table-empty-message">No pending orders.</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Sub-tab 3: TRADE HISTORY -->
+                            <div id="manage-subtab-history" class="manage-subtab-panel hidden-subtab">
+                                <div class="card manage-table-card">
+                                    <div class="card-header history-header-with-filters">
+                                        <div class="card-title">
+                                            <i class="fa-solid fa-clock-rotate-left header-icon"></i>
+                                            <span>Completed Trade History</span>
+                                        </div>
+                                        <div class="history-filters-bar">
+                                            <input type="text" id="history-filter-symbol" class="history-filter-input" placeholder="Symbol (e.g. BTC-USD)" oninput="debouncedHistorySearch()">
+                                            <select id="history-filter-market" class="history-filter-select" onchange="loadTradeHistoryPage(0)">
+                                                <option value="">All Markets</option>
+                                                <option value="Crypto">Crypto</option>
+                                                <option value="US Equities">US Equities</option>
+                                                <option value="Indian Equities">Indian Equities</option>
+                                                <option value="Forex">Forex</option>
+                                            </select>
+                                            <select id="history-filter-side" class="history-filter-select" onchange="loadTradeHistoryPage(0)">
+                                                <option value="">All Sides</option>
+                                                <option value="buy">BUY / LONG</option>
+                                                <option value="sell">SELL / SHORT</option>
+                                            </select>
+                                            <select id="history-filter-outcome" class="history-filter-select" onchange="loadTradeHistoryPage(0)">
+                                                <option value="">All Outcomes</option>
+                                                <option value="profit">Profit Only</option>
+                                                <option value="loss">Loss Only</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="manage-table-wrap">
+                                        <table class="orbit-terminal-table" id="trade-history-table">
+                                            <thead>
+                                                <tr>
+                                                    <th>SYMBOL</th>
+                                                    <th>MARKET</th>
+                                                    <th>SIDE</th>
+                                                    <th>ENTRY PRICE</th>
+                                                    <th>EXIT PRICE</th>
+                                                    <th>QUANTITY</th>
+                                                    <th>LEVERAGE</th>
+                                                    <th>REALIZED P&amp;L</th>
+                                                    <th>OUTCOME</th>
+                                                    <th>OPEN TIME</th>
+                                                    <th>CLOSE TIME</th>
+                                                    <th>STATUS</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="trade-history-tbody">
+                                                <tr>
+                                                    <td colspan="12" class="table-empty-message">No completed trades recorded.</td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    <!-- Pagination Footer -->
+                                    <div class="history-pagination-footer" id="history-pagination">
+                                        <button class="glow-btn btn-secondary pagination-btn" id="history-prev-btn" onclick="paginateHistory(-1)" disabled>
+                                            <i class="fa-solid fa-chevron-left"></i> Previous
+                                        </button>
+                                        <span class="pagination-info" id="history-page-info">Page 1 of 1</span>
+                                        <button class="glow-btn btn-secondary pagination-btn" id="history-next-btn" onclick="paginateHistory(1)" disabled>
+                                            Next <i class="fa-solid fa-chevron-right"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </div>
+                    </div><!-- /tab-content-manage-trades -->
+
+                    <!-- TAB 5: REPORTS PANE -->
                     <div id="tab-content-reports" class="tab-content hidden-tab">
 
                         <!-- REPORT TOOLBAR -->
@@ -1050,6 +2041,186 @@
                         </div>
 
                     </div><!-- /tab-content-reports -->
+
+                    <!-- TAB 5: ORBIT COPILOT PAGE -->
+                    <div id="tab-content-copilot" class="tab-content hidden-tab">
+                        <div class="copilot-terminal-container">
+                            <!-- 2.1 LEFT SIDE: CHAT HISTORY SIDEBAR -->
+                            <aside class="copilot-history-sidebar">
+                                <div class="copilot-sidebar-header">
+                                    <div class="copilot-sidebar-brand-row">
+                                        <div class="copilot-sidebar-brand">
+                                            <i class="fa-solid fa-brain text-emerald"></i>
+                                            <span>ORBIT AI</span>
+                                        </div>
+                                        <button class="copilot-sidebar-toggle-btn" id="copilot-sidebar-close-btn" onclick="toggleCopilotSidebar()" title="Collapse Chat History">
+                                            <i class="fa-solid fa-chevron-left"></i>
+                                        </button>
+                                    </div>
+                                    <button class="copilot-new-analysis-btn" id="copilot-new-analysis-btn" onclick="createNewAnalysis()">
+                                        <i class="fa-solid fa-plus"></i> New Analysis
+                                    </button>
+                                </div>
+                                <div class="copilot-history-scroll" id="copilot-history-list">
+                                    <!-- Populated dynamically: Today, Yesterday, Older -->
+                                    <div class="copilot-history-loading">
+                                        <i class="fa-solid fa-circle-notch fa-spin"></i> Loading history...
+                                    </div>
+                                </div>
+                            </aside>
+
+                            <!-- RIGHT SIDE: COPILOT MAIN TERMINAL -->
+                            <main class="copilot-main-panel">
+                                <!-- 2.2 & 2.3 COPILOT HEADER WITH BALANCE AND CLEAN TITLE -->
+                                <div class="copilot-page-header card">
+                                    <div class="copilot-page-header-left">
+                                        <button class="copilot-sidebar-open-tab hidden" id="copilot-sidebar-open-tab" onclick="toggleCopilotSidebar()" title="Open Chat History">
+                                            <i class="fa-solid fa-bars-staggered"></i> <span>History</span>
+                                        </button>
+                                        <h2 class="copilot-page-title"><i class="fa-solid fa-brain text-emerald"></i> ORBIT AI ANALYST</h2>
+                                    </div>
+                                    <div class="copilot-page-header-right">
+                                        <!-- Available Balance Display -->
+                                        <div class="copilot-balance-badge" title="User Trading Balance">
+                                            <span class="copilot-balance-lbl"><i class="fa-solid fa-wallet text-emerald"></i> Balance:</span>
+                                            <strong id="copilot-account-balance" class="copilot-balance-val">₹10,00,000.00</strong>
+                                        </div>
+                                        <div class="copilot-status-pill online"><span class="status-dot green-glow"></span> GROUNDED</div>
+                                        <button class="btn btn-sm btn-outline-danger" id="copilot-page-reset-btn" onclick="clearCopilotPageChat()" title="Reset session memory">
+                                            <i class="fa-solid fa-rotate-left"></i> Reset
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- SECTION 3: ASSET / MARKET SELECTOR & ACTIVE CONTEXT BAR -->
+                                <div class="copilot-selector-bar card">
+                                    <div class="copilot-selector-left">
+                                        <!-- Market Dropdown -->
+                                        <div class="copilot-market-dropdown-wrap">
+                                            <label for="copilot-market-select" class="copilot-market-label">Market</label>
+                                            <select id="copilot-market-select" class="copilot-market-select" onchange="onCopilotMarketChange(this.value)">
+                                                <option value="US Stocks" selected>US Stocks (Alpha Vantage)</option>
+                                                <option value="Indian Stocks">Indian Stocks</option>
+                                                <option value="NSE">NSE</option>
+                                                <option value="BSE">BSE</option>
+                                                <option value="Global Stocks">Global Stocks</option>
+                                                <option value="Crypto">Crypto</option>
+                                                <option value="Forex">Forex</option>
+                                                <option value="Commodities">Commodities</option>
+                                                <option value="Indices">Indices</option>
+                                            </select>
+                                        </div>
+
+                                        <!-- Asset Search Input -->
+                                        <div class="copilot-search-wrap">
+                                            <i class="fa-solid fa-magnifying-glass copilot-search-icon"></i>
+                                            <input type="text" id="copilot-asset-search" class="copilot-asset-search-input" placeholder="Search asset (e.g. AAPL, Apple, NVDA, BTC-USD)..." autocomplete="off" oninput="onAssetSearchInput(this.value)" />
+                                            <div id="copilot-search-dropdown" class="copilot-search-dropdown hidden"></div>
+                                        </div>
+                                    </div>
+
+                                    <!-- Active Asset Context Banner -->
+                                    <div class="copilot-active-asset-banner" id="copilot-active-asset-banner">
+                                        <div class="active-asset-indicator">
+                                            <span class="active-asset-tag">ACTIVE ASSET</span>
+                                            <strong class="active-asset-symbol" id="copilot-active-asset-title">AAPL &bull; Apple Inc.</strong>
+                                        </div>
+                                        <div class="active-asset-meta" id="copilot-active-asset-exchange">NASDAQ &bull; US Stocks</div>
+                                    </div>
+
+                                    <!-- Section 14: Response Modes -->
+                                    <div class="copilot-response-modes">
+                                        <button class="copilot-mode-btn" data-mode="QUICK" onclick="setResponseMode('QUICK')">Quick</button>
+                                        <button class="copilot-mode-btn active" data-mode="DETAILED" onclick="setResponseMode('DETAILED')">Detailed</button>
+                                        <button class="copilot-mode-btn" data-mode="EXPLAIN_SIMPLY" onclick="setResponseMode('EXPLAIN_SIMPLY')">Explain Simply</button>
+                                    </div>
+                                </div>
+
+                                <!-- ACTIVE TELEMETRY CARD -->
+                                <div class="copilot-context-card card" id="copilot-page-context-card">
+                                    <div class="copilot-context-header">
+                                        <div class="copilot-context-title">
+                                            <i class="fa-solid fa-crosshairs text-emerald"></i> ORBIT ENGINE TELEMETRY
+                                        </div>
+                                        <div class="copilot-context-status-wrap">
+                                            <span class="copilot-tag" id="copilot-page-active-symbol-badge">
+                                                SYMBOL: <strong id="copilot-page-symbol">AAPL</strong>
+                                            </span>
+                                            <span class="copilot-status-badge" id="copilot-page-analysis-status">
+                                                <i class="fa-solid fa-circle-notch fa-spin"></i> Checking Context...
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div class="copilot-context-telemetry" id="copilot-page-telemetry">
+                                        <div class="copilot-telem-item">
+                                            <span class="telem-label">STANCE</span>
+                                            <span class="telem-val text-emerald" id="copilot-page-stance">--</span>
+                                        </div>
+                                        <div class="copilot-telem-item">
+                                            <span class="telem-label">CONFIDENCE</span>
+                                            <span class="telem-val" id="copilot-page-confidence">--%</span>
+                                        </div>
+                                        <div class="copilot-telem-item">
+                                            <span class="telem-label">RISK LEVEL</span>
+                                            <span class="telem-val" id="copilot-page-risk">--</span>
+                                        </div>
+                                        <div class="copilot-telem-item">
+                                            <span class="telem-label">OPPORTUNITY</span>
+                                            <span class="telem-val" id="copilot-page-opportunity">--/100</span>
+                                        </div>
+                                        <div class="copilot-telem-item">
+                                            <span class="telem-label">ACTIVE SETUPS</span>
+                                            <span class="telem-val" id="copilot-page-setups">--</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- MAIN COPILOT WORKSPACE -->
+                                <div class="copilot-workspace" id="copilot-page-workspace">
+                                    <!-- SUGGESTIONS CHIP ROW -->
+                                    <div class="copilot-suggestions-bar" id="copilot-page-suggestions">
+                                        <span class="suggestions-label"><i class="fa-solid fa-lightbulb text-amber"></i> Suggested:</span>
+                                        <button class="copilot-chip" onclick="askCopilotPagePreset('Analyze this stock.')">Analyze this stock</button>
+                                        <button class="copilot-chip" onclick="askCopilotPagePreset('What are the major risks for this stock?')">Major risks</button>
+                                        <button class="copilot-chip" onclick="askCopilotPagePreset('Explain the current ORBIT decision.')">Explain decision</button>
+                                        <button class="copilot-chip" onclick="askCopilotPagePreset('What would invalidate this analysis?')">Invalidation levels</button>
+                                        <button class="copilot-chip" onclick="askCopilotPagePreset('Explain this in simple language.')">Explain simply</button>
+                                    </div>
+
+                                    <!-- SCROLLABLE CONVERSATION STREAM -->
+                                    <div class="copilot-conversation-stream" id="copilot-page-messages">
+                                        <!-- Messages appended dynamically -->
+                                    </div>
+
+                                    <!-- LOADING INDICATOR (Section 20 Stages) -->
+                                    <div class="copilot-loading-bar hidden" id="copilot-page-loading">
+                                        <div class="copilot-loading-spinner"></div>
+                                        <span id="copilot-loading-text">Loading market context...</span>
+                                    </div>
+
+                                    <!-- ERROR BANNER -->
+                                    <div class="copilot-error-banner hidden" id="copilot-page-error">
+                                        <i class="fa-solid fa-triangle-exclamation"></i>
+                                        <span id="copilot-page-error-msg">ORBIT Copilot encountered an error. Please try again.</span>
+                                    </div>
+
+                                    <!-- DOCKED INPUT WELL -->
+                                    <div class="copilot-input-dock card">
+                                        <div class="copilot-input-row">
+                                            <textarea id="copilot-page-input" class="copilot-textarea" rows="1" placeholder="Ask ORBIT about this asset (e.g. Is this stock risky right now? Why is it bullish?)..."></textarea>
+                                            <button id="copilot-page-send-btn" class="btn btn-primary copilot-send-btn" onclick="sendCopilotPageMessage()">
+                                                <i class="fa-solid fa-paper-plane"></i> <span>Send</span>
+                                            </button>
+                                        </div>
+                                        <div class="copilot-input-footer">
+                                            <span class="copilot-disclaimer"><i class="fa-solid fa-shield-halved"></i> Analytical decision-support assistant. Does not execute trades, place orders, or promise profits.</span>
+                                            <span class="copilot-shortcut-hint">Press <strong>Enter</strong> to send &bull; <strong>Shift+Enter</strong> for newline</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </main>
+                        </div>
+                    </div><!-- /tab-content-copilot -->
                     
                 </div><!-- /page-view -->
             </main>
@@ -1121,8 +2292,113 @@
         </div>
     </div>
 
+    <!-- ══ MANAGE POSITION MODAL (PHASE 11) ══ -->
+    <div id="manage-trade-modal" class="trade-confirm-overlay hidden">
+        <div class="manage-modal-card">
+            <!-- Modal Header -->
+            <div class="manage-modal-header">
+                <div class="manage-modal-title-group">
+                    <div class="manage-modal-icon">
+                        <i class="fa-solid fa-sliders"></i>
+                    </div>
+                    <div>
+                        <h3 class="manage-modal-title">MANAGE POSITION</h3>
+                        <p class="manage-modal-sub" id="mmodal-symbol-sub">AAPL &bull; Apple Inc.</p>
+                    </div>
+                </div>
+                <div class="manage-modal-badges">
+                    <span class="trade-side-badge buy" id="mmodal-side-badge">LONG</span>
+                    <span class="trade-status-badge" id="mmodal-status-badge">OPEN</span>
+                    <button class="glow-btn btn-secondary manage-close-btn" onclick="closeManageTradeModal()">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Position Overview Strip -->
+            <div class="manage-modal-overview-grid">
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">ENTRY PRICE</span>
+                    <span class="mmodal-metric-val" id="mmodal-entry-price">$0.00</span>
+                </div>
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">CURRENT PRICE</span>
+                    <span class="mmodal-metric-val" id="mmodal-current-price">$0.00</span>
+                </div>
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">QUANTITY</span>
+                    <span class="mmodal-metric-val" id="mmodal-total-qty">0</span>
+                </div>
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">REMAINING</span>
+                    <span class="mmodal-metric-val" id="mmodal-remaining-qty">0</span>
+                </div>
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">LEVERAGE</span>
+                    <span class="mmodal-metric-val text-cyan" id="mmodal-leverage">1x</span>
+                </div>
+                <div class="mmodal-metric-cell">
+                    <span class="mmodal-metric-label">UNREALIZED P&amp;L</span>
+                    <span class="mmodal-metric-val" id="mmodal-unrealized-pnl">+₹0.00</span>
+                </div>
+            </div>
+
+            <!-- Close Position Action Section -->
+            <div class="manage-modal-close-section">
+                <h4 class="manage-section-heading">CLOSE POSITION</h4>
+                
+                <!-- Quick Percentage Buttons -->
+                <div class="close-pct-btn-group">
+                    <button type="button" class="pct-btn" onclick="selectClosePct(25)">Close 25%</button>
+                    <button type="button" class="pct-btn" onclick="selectClosePct(50)">Close 50%</button>
+                    <button type="button" class="pct-btn" onclick="selectClosePct(75)">Close 75%</button>
+                    <button type="button" class="pct-btn danger" onclick="selectClosePct(100)">FULL CLOSE</button>
+                </div>
+
+                <!-- Custom Quantity Close -->
+                <div class="custom-close-row">
+                    <label for="custom-close-qty" class="custom-close-label">Close Custom Quantity:</label>
+                    <div class="custom-close-input-wrap">
+                        <input type="number" id="custom-close-qty" step="any" min="0.000001" placeholder="Quantity..." oninput="onCustomCloseInput()">
+                        <button type="button" class="glow-btn btn-secondary btn-max-qty" onclick="setMaxCloseQty()">MAX</button>
+                    </div>
+                </div>
+
+                <!-- Live Close Estimate Banner -->
+                <div class="close-estimate-banner" id="close-estimate-banner">
+                    <div class="estimate-row">
+                        <span>Quantity to Close:</span>
+                        <strong id="est-close-qty">0.00</strong>
+                    </div>
+                    <div class="estimate-row">
+                        <span>Estimated Exit Price:</span>
+                        <strong id="est-exit-price">$0.00</strong>
+                    </div>
+                    <div class="estimate-row">
+                        <span>Estimated Realized P&amp;L:</span>
+                        <strong id="est-realized-pnl" class="text-green">+₹0.00</strong>
+                    </div>
+                    <div class="estimate-row">
+                        <span>Estimated Margin Release:</span>
+                        <strong id="est-margin-refund">₹0.00</strong>
+                    </div>
+                </div>
+
+                <!-- Confirmation Action Buttons -->
+                <div class="manage-modal-actions">
+                    <button type="button" class="glow-btn btn-secondary" onclick="closeManageTradeModal()">
+                        Cancel
+                    </button>
+                    <button type="button" id="btn-confirm-close" class="glow-btn btn-danger" onclick="executePositionClose()">
+                        <i class="fa-solid fa-check"></i> <span id="btn-confirm-close-text">Confirm Close</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Custom 3D Scene Controls script -->
-    <script src="three-scene.js?v=orbit_news_v18"></script>
-    <script src="app.js?v=orbit_news_v18"></script>
+    <script src="three-scene.js?v=orbit_candleshift_v4"></script>
+    <script src="app.js?v=orbit_google_clerk_auth_v2"></script>
 </body>
 </html>

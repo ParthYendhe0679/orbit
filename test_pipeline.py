@@ -1,11 +1,14 @@
-"""Direct pipeline test to capture the actual error."""
+import asyncio
 import sys
 import traceback
 sys.path.insert(0, ".")
 
-import yfinance as yf
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import pandas as pd
 import backend.database as db
+from backend.services.market_data_service import market_service
 
 from backend.agents.chart_analyst import find_support_resistance
 from backend.agents.indicator_analyst import analyze_indicators
@@ -16,17 +19,19 @@ from backend.agents.execution_agent import check_and_execute_trades
 from backend.agents.portfolio_monitor import monitor_positions
 
 def log(agent, msg):
-    print(f"  [{agent}] {msg}")
+    safe_msg = str(msg)
+    try:
+        print(f"  [{agent}] {safe_msg}")
+    except UnicodeEncodeError:
+        print(f"  [{agent}] {safe_msg.encode('ascii', 'replace').decode('ascii')}")
 
 try:
     print("Step 1: Init DB...")
     db.init_db()
 
-    print("Step 2: Downloading market data...")
-    df = yf.download("BTC-USD", period="60d", interval="1d")
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
-    print(f"  Downloaded {len(df)} rows. Columns: {list(df.columns)}")
+    print("Step 2: Retrieving market data via MarketDataService...")
+    df = asyncio.run(market_service.get_normalized_dataframe("BTC-USD", period="60d", interval="1d"))
+    print(f"  Retrieved {len(df)} validated rows. Columns: {list(df.columns)}")
 
     latest_close = float(df["Close"].iloc[-1])
     print(f"  Latest close: {latest_close:.2f}")

@@ -68,5 +68,9 @@ def analyze_indicators(df: pd.DataFrame, log_func=None):
         "strength": strength,
         "rsi": float(current_rsi),
         "macd": macd_state,
+        "macd_line": float(curr_macd),
+        "macd_signal": float(curr_signal),
+        "ema50": float(curr_ema50),
+        "ema200": float(curr_ema200),
         "ma_alignment": ma_alignment
     }

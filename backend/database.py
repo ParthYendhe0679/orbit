@@ -1,6 +1,10 @@
-import sqlite3
+import json as _json
 import os
+import sqlite3
+import time
+import uuid
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -16,9 +20,18 @@ if DATABASE_URL and (DATABASE_URL.startswith("postgres://") or DATABASE_URL.star
 def get_connection():
     if IS_POSTGRES:
         import psycopg2
-        # Neon DB connection
-        conn = psycopg2.connect(DATABASE_URL)
-        return conn
+        last_err = None
+        for attempt in range(3):
+            try:
+                conn = psycopg2.connect(DATABASE_URL, connect_timeout=4)
+                return conn
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(0.3 * (attempt + 1))
+        if last_err is not None:
+            raise last_err
+        raise ConnectionError("Failed to connect to PostgreSQL database after 3 attempts.")
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -74,8 +87,36 @@ def init_db():
             target DOUBLE PRECISION NOT NULL,
             pnl DOUBLE PRECISION DEFAULT 0.0,
             status VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending / active / closed
-            outcome VARCHAR(20), -- target / sl / stopped / cancelled
+            outcome VARCHAR(20), -- target / sl / stopped / cancelled / manual_close
             timestamp VARCHAR(50) NOT NULL
+        )
+        """)
+        # Postgres migration for trade lifecycle columns
+        for col_name, col_type in [
+            ("leverage", "DOUBLE PRECISION DEFAULT 1.0"),
+            ("margin_used", "DOUBLE PRECISION DEFAULT 0.0"),
+            ("original_quantity", "DOUBLE PRECISION"),
+            ("remaining_quantity", "DOUBLE PRECISION"),
+            ("market", "VARCHAR(50) DEFAULT 'Crypto'"),
+            ("realized_pnl", "DOUBLE PRECISION DEFAULT 0.0"),
+            ("closed_at", "VARCHAR(50)")
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col_name} {col_type}')
+            except Exception as e:
+                print(f"Postgres trade migration error for {col_name}: {e}")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_executions (
+            id SERIAL PRIMARY KEY,
+            position_id INTEGER REFERENCES trades(id) ON DELETE CASCADE,
+            user_id INTEGER REFERENCES "user"(id) ON DELETE CASCADE,
+            action VARCHAR(20) NOT NULL, -- OPEN, PARTIAL_CLOSE, FULL_CLOSE
+            quantity DOUBLE PRECISION NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            realized_pnl DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+            timestamp VARCHAR(50) NOT NULL,
+            metadata TEXT DEFAULT '{}'
         )
         """)
         
@@ -89,6 +130,29 @@ def init_db():
             min_profit_target DOUBLE PRECISION NOT NULL DEFAULT 200.0,
             max_profit_target DOUBLE PRECISION NOT NULL DEFAULT 1000.0,
             is_active BOOLEAN NOT NULL DEFAULT FALSE
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id VARCHAR(100) PRIMARY KEY,
+            user_id INTEGER REFERENCES "user"(id) ON DELETE CASCADE,
+            title VARCHAR(255) NOT NULL,
+            selected_asset VARCHAR(50) NOT NULL DEFAULT 'BTC-USD',
+            selected_market VARCHAR(50) NOT NULL DEFAULT 'Crypto',
+            created_at VARCHAR(50) NOT NULL,
+            updated_at VARCHAR(50) NOT NULL
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id VARCHAR(100) PRIMARY KEY,
+            conversation_id VARCHAR(100) REFERENCES conversations(id) ON DELETE CASCADE,
+            role VARCHAR(20) NOT NULL,
+            content TEXT NOT NULL,
+            timestamp VARCHAR(50) NOT NULL,
+            metadata TEXT DEFAULT '{}'
         )
         """)
     else:
@@ -125,7 +189,7 @@ def init_db():
             target REAL NOT NULL,
             pnl REAL DEFAULT 0.0,
             status TEXT NOT NULL DEFAULT 'pending', -- pending / active / closed
-            outcome TEXT, -- target / sl / stopped / cancelled
+            outcome TEXT, -- target / sl / stopped / cancelled / manual_close
             timestamp TEXT NOT NULL,
             FOREIGN KEY(user_id) REFERENCES user(id)
         )
@@ -144,15 +208,79 @@ def init_db():
             FOREIGN KEY(user_id) REFERENCES user(id)
         )
         """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER,
+            title TEXT NOT NULL,
+            selected_asset TEXT NOT NULL DEFAULT 'BTC-USD',
+            selected_market TEXT NOT NULL DEFAULT 'Crypto',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES user(id)
+        )
+        """)
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}',
+            FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+        )
+        """)
         
-        # SQLite schema migration to add user_id column if it doesn't exist
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS trade_executions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            position_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            action TEXT NOT NULL, -- OPEN, PARTIAL_CLOSE, FULL_CLOSE
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            realized_pnl REAL NOT NULL DEFAULT 0.0,
+            timestamp TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}',
+            FOREIGN KEY(position_id) REFERENCES trades(id) ON DELETE CASCADE,
+            FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
+        )
+        """)
+        
+        # SQLite schema migration to add missing columns to trades
         cursor.execute("PRAGMA table_info(trades)")
         columns = [col[1] for col in cursor.fetchall()]
-        if "user_id" not in columns:
-            try:
-                cursor.execute("ALTER TABLE trades ADD COLUMN user_id INTEGER")
-            except Exception as e:
-                print(f"Migration error: {e}")
+        sqlite_trade_migrations = [
+            ("user_id", "INTEGER"),
+            ("leverage", "REAL DEFAULT 1.0"),
+            ("margin_used", "REAL DEFAULT 0.0"),
+            ("original_quantity", "REAL"),
+            ("remaining_quantity", "REAL"),
+            ("market", "TEXT DEFAULT 'Crypto'"),
+            ("realized_pnl", "REAL DEFAULT 0.0"),
+            ("closed_at", "TEXT")
+        ]
+        for col_name, col_type in sqlite_trade_migrations:
+            if col_name not in columns:
+                try:
+                    cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_type}")
+                except Exception as e:
+                    print(f"SQLite migration error for {col_name}: {e}")
+
+    # Backfill legacy trades with default quantities and leverage if missing
+    try:
+        cursor.execute("UPDATE trades SET original_quantity = quantity WHERE original_quantity IS NULL")
+        cursor.execute("UPDATE trades SET remaining_quantity = quantity WHERE remaining_quantity IS NULL AND status IN ('pending', 'active')")
+        cursor.execute("UPDATE trades SET remaining_quantity = 0.0 WHERE remaining_quantity IS NULL AND status = 'closed'")
+        cursor.execute("UPDATE trades SET leverage = 1.0 WHERE leverage IS NULL OR leverage <= 0")
+        cursor.execute("UPDATE trades SET margin_used = (quantity * entry_price) WHERE margin_used IS NULL OR margin_used = 0.0")
+        cursor.execute("UPDATE trades SET market = 'Crypto' WHERE market IS NULL")
+        cursor.execute("UPDATE trades SET realized_pnl = pnl WHERE realized_pnl IS NULL AND status = 'closed'")
+    except Exception as e:
+        print(f"Backfill legacy trades error: {e}")
                 
     # Initialize default user if not exists
     u = get_user_table()
@@ -311,6 +439,24 @@ def sync_login_user(email=None, username=None, clerk_id=None):
             row = cursor.fetchone()
             if row:
                 user = dict(row)
+                needs_update = False
+                update_cols = []
+                update_vals = []
+                if clean_email and not user.get("email"):
+                    update_cols.append(f"email = {p}")
+                    update_vals.append(clean_email)
+                    user["email"] = clean_email
+                    needs_update = True
+                if not user.get("is_verified"):
+                    verified_val = True if IS_POSTGRES else 1
+                    update_cols.append(f"is_verified = {p}")
+                    update_vals.append(verified_val)
+                    user["is_verified"] = verified_val
+                    needs_update = True
+                if needs_update and update_cols:
+                    update_vals.append(user["id"])
+                    cursor.execute(f"UPDATE {u} SET {', '.join(update_cols)} WHERE id = {p}", tuple(update_vals))
+                    conn.commit()
 
         # 2. Lookup by email
         if not user and clean_email:
@@ -318,10 +464,12 @@ def sync_login_user(email=None, username=None, clerk_id=None):
             row = cursor.fetchone()
             if row:
                 user = dict(row)
-                if clean_clerk_id and not user.get("clerk_id"):
-                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {'TRUE' if IS_POSTGRES else 1} WHERE id = {p}", (clean_clerk_id, user["id"]))
+                verified_val = True if IS_POSTGRES else 1
+                if clean_clerk_id and user.get("clerk_id") != clean_clerk_id:
+                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {p} WHERE id = {p}", (clean_clerk_id, verified_val, user["id"]))
                     conn.commit()
                     user["clerk_id"] = clean_clerk_id
+                    user["is_verified"] = verified_val
 
         # 3. Lookup by username
         if not user and clean_username:
@@ -329,14 +477,18 @@ def sync_login_user(email=None, username=None, clerk_id=None):
             row = cursor.fetchone()
             if row:
                 user = dict(row)
-                if clean_clerk_id and not user.get("clerk_id"):
-                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {'TRUE' if IS_POSTGRES else 1} WHERE id = {p}", (clean_clerk_id, user["id"]))
+                verified_val = True if IS_POSTGRES else 1
+                if clean_clerk_id and user.get("clerk_id") != clean_clerk_id:
+                    cursor.execute(f"UPDATE {u} SET clerk_id = {p}, is_verified = {p} WHERE id = {p}", (clean_clerk_id, verified_val, user["id"]))
                     conn.commit()
                     user["clerk_id"] = clean_clerk_id
+                    user["is_verified"] = verified_val
 
         # 4. User does not exist in DB — auto create verified trading account
         if not user:
-            base_name = clean_username or (clean_email.split("@")[0] if clean_email else f"trader_{int(datetime.utcnow().timestamp())}")
+            import re
+            raw_base = clean_username or (clean_email.split("@")[0] if clean_email else f"trader_{int(datetime.utcnow().timestamp())}")
+            base_name = re.sub(r'[^a-zA-Z0-9_-]', '_', raw_base).strip('_') or f"trader_{int(datetime.utcnow().timestamp())}"
             final_username = base_name
             cursor.execute(f"SELECT id FROM {u} WHERE username = {p}", (final_username,))
             if cursor.fetchone():
@@ -464,7 +616,7 @@ def update_user_balance(user_id, amount):
     conn.commit()
     conn.close()
 
-def create_pending_trade(user_id, asset, trade_type, quantity, entry_price, sl, target):
+def create_pending_trade(user_id, asset, trade_type, quantity, entry_price, sl, target, leverage=1.0, market="Crypto"):
     # Supersede any *pending* order on the same asset — an unconfirmed order was
     # never funded, so cancelling it costs nothing.
     #
@@ -479,28 +631,90 @@ def create_pending_trade(user_id, asset, trade_type, quantity, entry_price, sl, 
 
     cursor.execute(f"""
     UPDATE trades
-    SET status = 'closed', exit_price = {p}, current_price = {p}, outcome = 'cancelled', pnl = 0.0
+    SET status = 'closed', exit_price = {p}, current_price = {p}, outcome = 'cancelled', pnl = 0.0, remaining_quantity = 0.0, closed_at = {p}
     WHERE user_id = {p} AND asset = {p} AND status = 'pending'
-    """, (entry_price, entry_price, user_id, asset))
+    """, (entry_price, entry_price, datetime.now().isoformat(), user_id, asset))
 
     timestamp = datetime.now().isoformat()
+    lev = float(leverage) if leverage and float(leverage) > 0 else 1.0
+    margin = (float(quantity) * float(entry_price)) / lev
+    mkt = market or ("Crypto" if "-" in str(asset) else "Stock")
+
     if IS_POSTGRES:
         cursor.execute(f"""
-        INSERT INTO trades (user_id, asset, type, quantity, entry_price, current_price, sl, target, status, timestamp)
-        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'pending', {p})
+        INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
+        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'pending', 0.0, {p})
         RETURNING id
-        """, (user_id, asset, trade_type, quantity, entry_price, entry_price, sl, target, timestamp))
+        """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, margin, mkt, entry_price, entry_price, sl, target, timestamp))
         trade_id = cursor.fetchone()["id"]
     else:
         cursor.execute(f"""
-        INSERT INTO trades (user_id, asset, type, quantity, entry_price, current_price, sl, target, status, timestamp)
-        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'pending', {p})
-        """, (user_id, asset, trade_type, quantity, entry_price, entry_price, sl, target, timestamp))
+        INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
+        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'pending', 0.0, {p})
+        """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, margin, mkt, entry_price, entry_price, sl, target, timestamp))
         trade_id = cursor.lastrowid
     
     conn.commit()
     conn.close()
     return trade_id
+
+def open_active_trade_atomic(user_id: int, asset: str, trade_type: str, quantity: float, price: float, leverage: float = 1.0, sl: float = 0.0, target: float = 0.0, market: Optional[str] = None):
+    """
+    Atomic single-transaction trade opener fulfilling Part 12 & Part 25.
+    Executes balance validation, margin reservation, active trade insertion,
+    and audit log creation in a single ACID transaction on the permanent database.
+    """
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+
+    lev = float(leverage) if leverage and float(leverage) > 0 else 1.0
+    cost = (float(quantity) * float(price)) / lev
+    mkt = market or ("Crypto" if "-" in str(asset) else "Stock")
+    now_iso = datetime.now().isoformat()
+
+    try:
+        # 1. Validate balance
+        cursor.execute(f"SELECT balance FROM {u} WHERE id = {p}", (user_id,))
+        row = cursor.fetchone()
+        balance = float(row["balance"]) if row else 0.0
+        if cost > balance:
+            conn.rollback()
+            return None, f"Insufficient funds: margin {cost:.2f} exceeds balance {balance:.2f}"
+
+        # 2. Deduct margin from user balance
+        new_balance = balance - cost
+        cursor.execute(f"UPDATE {u} SET balance = {p} WHERE id = {p}", (new_balance, user_id))
+
+        # 3. Insert active trade
+        if IS_POSTGRES:
+            cursor.execute(f"""
+            INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'active', 0.0, {p})
+            RETURNING id
+            """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, cost, mkt, price, price, sl, target, now_iso))
+            trade_id = cursor.fetchone()["id"]
+        else:
+            cursor.execute(f"""
+            INSERT INTO trades (user_id, asset, type, quantity, original_quantity, remaining_quantity, leverage, margin_used, market, entry_price, current_price, sl, target, status, realized_pnl, timestamp)
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, 'active', 0.0, {p})
+            """, (user_id, asset, trade_type, quantity, quantity, quantity, lev, cost, mkt, price, price, sl, target, now_iso))
+            trade_id = cursor.lastrowid
+
+        # 4. Insert audit log execution
+        cursor.execute(f"""
+        INSERT INTO trade_executions (position_id, user_id, action, quantity, price, realized_pnl, timestamp, metadata)
+        VALUES ({p}, {p}, 'OPEN', {p}, {p}, 0.0, {p}, '{{}}')
+        """, (trade_id, user_id, float(quantity), float(price), now_iso))
+
+        conn.commit()
+        return trade_id, new_balance
+    except Exception as err:
+        conn.rollback()
+        raise err
+    finally:
+        conn.close()
 
 def get_active_positions(user_id=None):
     conn = get_connection()
@@ -514,6 +728,71 @@ def get_active_positions(user_id=None):
     conn.close()
     return [dict(r) for r in rows]
 
+def get_open_positions(user_id=None):
+    """Retrieve all open active positions with remaining quantity > 0."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    if user_id is not None:
+        cursor.execute(f"""
+        SELECT * FROM trades 
+        WHERE user_id = {p} AND status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0)
+        ORDER BY timestamp DESC
+        """, (user_id,))
+    else:
+        cursor.execute("""
+        SELECT * FROM trades 
+        WHERE status = 'active' AND (remaining_quantity IS NULL OR remaining_quantity > 0)
+        ORDER BY timestamp DESC
+        """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_position_by_id(trade_id: int, user_id: Optional[int] = None) -> Optional[dict]:
+    """Retrieve single position by id, ensuring optional user ownership validation."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    if user_id is not None:
+        cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}", (trade_id, user_id))
+    else:
+        cursor.execute(f"SELECT * FROM trades WHERE id = {p}", (trade_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_pending_orders(user_id=None):
+    """Retrieve all pending unfilled orders."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    if user_id is not None:
+        cursor.execute(f"SELECT * FROM trades WHERE user_id = {p} AND status = 'pending' ORDER BY timestamp DESC", (user_id,))
+    else:
+        cursor.execute("SELECT * FROM trades WHERE status = 'pending' ORDER BY timestamp DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def record_trade_execution(position_id: int, user_id: int, action: str, quantity: float, price: float, realized_pnl: float = 0.0, metadata: Optional[dict] = None):
+    """Append-only audit record of an execution event (OPEN, PARTIAL_CLOSE, FULL_CLOSE)."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    timestamp = datetime.now().isoformat()
+    meta_json = _json.dumps(metadata or {})
+    try:
+        cursor.execute(f"""
+        INSERT INTO trade_executions (position_id, user_id, action, quantity, price, realized_pnl, timestamp, metadata)
+        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+        """, (position_id, user_id, action, float(quantity), float(price), float(realized_pnl), timestamp, meta_json))
+        conn.commit()
+    except Exception as e:
+        print(f"record_trade_execution error: {e}")
+    finally:
+        conn.close()
+
 def get_trade_history(user_id=None):
     conn = get_connection()
     cursor = get_cursor(conn)
@@ -525,6 +804,95 @@ def get_trade_history(user_id=None):
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+def get_closed_trade_history_paginated(
+    user_id: Optional[int] = None,
+    symbol: Optional[str] = None,
+    market: Optional[str] = None,
+    side: Optional[str] = None,
+    outcome: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0
+) -> dict:
+    """Retrieve paginated completed closed trades with filters."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+
+    where_clauses = ["status = 'closed'"]
+    params = []
+
+    if user_id is not None:
+        where_clauses.append(f"user_id = {p}")
+        params.append(user_id)
+
+    if symbol:
+        where_clauses.append(f"UPPER(asset) = {p}")
+        params.append(symbol.strip().upper())
+
+    if market:
+        where_clauses.append(f"UPPER(market) = {p}")
+        params.append(market.strip().upper())
+
+    if side:
+        where_clauses.append(f"LOWER(type) = {p}")
+        params.append(side.strip().lower())
+
+    if outcome:
+        out = outcome.strip().lower()
+        if out == "profit":
+            where_clauses.append("realized_pnl > 0")
+        elif out == "loss":
+            where_clauses.append("realized_pnl < 0")
+        elif out == "breakeven":
+            where_clauses.append("realized_pnl = 0")
+
+    where_str = " WHERE " + " AND ".join(where_clauses)
+
+    # Count query
+    count_query = f"SELECT COUNT(*) as total FROM trades {where_str}"
+    cursor.execute(count_query, tuple(params))
+    count_row = cursor.fetchone()
+    total_count = count_row["total"] if count_row else 0
+
+    # Data query
+    data_query = f"""
+    SELECT * FROM trades 
+    {where_str} 
+    ORDER BY COALESCE(closed_at, timestamp) DESC, id DESC 
+    LIMIT {int(limit)} OFFSET {int(offset)}
+    """
+    cursor.execute(data_query, tuple(params))
+    rows = cursor.fetchall()
+    conn.close()
+
+    formatted_trades = []
+    for r in rows:
+        d = dict(r)
+        d["symbol"] = d.get("asset") or d.get("symbol", "")
+        formatted_trades.append(d)
+
+    return {
+        "trades": formatted_trades,
+        "total": total_count,
+        "total_count": total_count,
+        "limit": limit,
+        "offset": offset
+    }
+
+def get_total_realized_pnl(user_id: Optional[int] = None) -> float:
+    """Sum total realized profit/loss across all closed trades for user."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    if user_id is not None:
+        cursor.execute(f"SELECT COALESCE(SUM(realized_pnl), 0.0) as total FROM trades WHERE user_id = {p} AND status = 'closed'", (user_id,))
+    else:
+        cursor.execute("SELECT COALESCE(SUM(realized_pnl), 0.0) as total FROM trades WHERE status = 'closed'")
+    row = cursor.fetchone()
+    total = float(row["total"]) if row and row["total"] is not None else 0.0
+    conn.close()
+    return total
 
 def get_all_trades(user_id=None, status=None):
     """
@@ -571,7 +939,8 @@ def execute_trade(trade_id, execution_price):
         conn.close()
         return False
         
-    cost = trade["quantity"] * execution_price
+    lev = float(trade["leverage"]) if trade["leverage"] and float(trade["leverage"]) > 0 else 1.0
+    cost = (trade["quantity"] * execution_price) / lev
     user_id = trade["user_id"] if trade["user_id"] is not None else 1
 
     # Never let a fill push the wallet negative — reject it and cancel the order
@@ -580,27 +949,38 @@ def execute_trade(trade_id, execution_price):
     row = cursor.fetchone()
     balance = row["balance"] if row else 0.0
     if cost > balance:
+        now_iso = datetime.now().isoformat()
         cursor.execute(f"""
         UPDATE trades
-        SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = 0.0, outcome = 'cancelled'
+        SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = 0.0, realized_pnl = 0.0, outcome = 'cancelled', remaining_quantity = 0.0, closed_at = {p}
         WHERE id = {p}
-        """, (execution_price, execution_price, trade_id))
+        """, (execution_price, execution_price, now_iso, trade_id))
         conn.commit()
         conn.close()
         return False
 
-    # Deduct cost from balance
+    # Deduct margin cost from balance
     cursor.execute(f"UPDATE {u} SET balance = balance - {p} WHERE id = {p}", (cost, user_id))
 
     # Update trade status
     cursor.execute(f"""
     UPDATE trades
-    SET status = 'active', entry_price = {p}, current_price = {p}
+    SET status = 'active', entry_price = {p}, current_price = {p}, margin_used = {p}, original_quantity = quantity, remaining_quantity = quantity
     WHERE id = {p}
-    """, (execution_price, execution_price, trade_id))
+    """, (execution_price, execution_price, cost, trade_id))
 
     conn.commit()
     conn.close()
+
+    # Record open execution in audit log
+    record_trade_execution(
+        position_id=trade_id,
+        user_id=user_id,
+        action="OPEN",
+        quantity=trade["quantity"],
+        price=execution_price,
+        realized_pnl=0.0
+    )
     return True
 
 def update_active_position_price(trade_id, current_price):
@@ -616,11 +996,12 @@ def update_active_position_price(trade_id, current_price):
         
     # Calculate current unrealized P&L
     entry = trade["entry_price"]
-    qty = trade["quantity"]
-    if trade["type"] == "buy":
-        pnl = (current_price - entry) * qty
+    qty = trade.get("remaining_quantity") if trade.get("remaining_quantity") is not None else trade["quantity"]
+    lev = trade.get("leverage") or 1.0
+    if trade["type"].lower() == "buy":
+        pnl = (current_price - entry) * qty * lev
     else: # sell
-        pnl = (entry - current_price) * qty
+        pnl = (entry - current_price) * qty * lev
         
     cursor.execute(f"""
     UPDATE trades 
@@ -643,44 +1024,228 @@ def close_trade(trade_id, exit_price, outcome):
         conn.close()
         return
         
-    qty = trade["quantity"]
+    now_iso = datetime.now().isoformat()
+    qty = trade.get("remaining_quantity") if trade.get("remaining_quantity") is not None else trade["quantity"]
     entry = trade["entry_price"]
+    lev = trade.get("leverage") or 1.0
     user_id = trade["user_id"] if trade["user_id"] is not None else 1
     
     if trade["status"] == "pending":
         # Pending trade was never funded — just mark it closed/cancelled, no refund
         cursor.execute(f"""
         UPDATE trades 
-        SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = 0.0, outcome = {p}
+        SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = 0.0, realized_pnl = 0.0, remaining_quantity = 0.0, outcome = {p}, closed_at = {p}
         WHERE id = {p}
-        """, (exit_price, exit_price, outcome, trade_id))
+        """, (exit_price, exit_price, outcome, now_iso, trade_id))
         conn.commit()
         conn.close()
         return
         
-    # Calculate final P&L for active trade
-    if trade["type"] == "buy":
-        pnl = (exit_price - entry) * qty
+    # Calculate final P&L for active trade on remaining quantity
+    if trade["type"].lower() == "buy":
+        portion_pnl = (exit_price - entry) * qty * lev
     else: # sell
-        pnl = (entry - exit_price) * qty
+        portion_pnl = (entry - exit_price) * qty * lev
         
-    # Refund position value + P&L back to balance
-    if trade["type"] == "buy":
-        refund = qty * exit_price
-    else:
-        refund = qty * (2 * entry - exit_price)
+    # Refund margin + portion PnL back to balance
+    margin = trade.get("margin_used") if trade.get("margin_used") is not None and trade.get("margin_used") > 0 else ((qty * entry) / lev)
+    refund = margin + portion_pnl
+    total_realized_pnl = (trade.get("realized_pnl") or 0.0) + portion_pnl
         
     cursor.execute(f"UPDATE {u} SET balance = balance + {p} WHERE id = {p}", (refund, user_id))
     
     # Update trade status
     cursor.execute(f"""
     UPDATE trades 
-    SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = {p}, outcome = {p}
+    SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = {p}, realized_pnl = {p}, remaining_quantity = 0.0, margin_used = 0.0, outcome = {p}, closed_at = {p}
     WHERE id = {p}
-    """, (exit_price, exit_price, pnl, outcome, trade_id))
+    """, (exit_price, exit_price, total_realized_pnl, total_realized_pnl, outcome, now_iso, trade_id))
     
     conn.commit()
     conn.close()
+
+    # Record execution
+    record_trade_execution(
+        position_id=trade_id,
+        user_id=user_id,
+        action="FULL_CLOSE",
+        quantity=qty,
+        price=exit_price,
+        realized_pnl=portion_pnl
+    )
+
+def partially_close_position(trade_id: int, user_id: int, close_qty: float, exit_price: float) -> dict:
+    """
+    Partially close an open active position.
+    Credits margin refund + realized PnL on closed quantity to user balance.
+    Decrements remaining_quantity, retains remaining margin & unrealized PnL.
+    """
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+
+    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}", (trade_id, user_id))
+    trade = cursor.fetchone()
+    if not trade:
+        conn.close()
+        raise ValueError("Position not found or unauthorized.")
+
+    if trade["status"] != "active":
+        conn.close()
+        raise ValueError(f"Position is {trade['status']}, cannot close.")
+
+    rem_qty = float(trade.get("remaining_quantity") if trade.get("remaining_quantity") is not None else trade["quantity"])
+    if close_qty <= 0:
+        conn.close()
+        raise ValueError("Close quantity must be strictly greater than 0.")
+
+    if close_qty > rem_qty:
+        conn.close()
+        raise ValueError(f"Close quantity ({close_qty}) exceeds remaining position quantity ({rem_qty}).")
+
+    if close_qty == rem_qty:
+        conn.close()
+        # Exact remaining quantity matches full close
+        return fully_close_position(trade_id, user_id, exit_price, outcome="manual_close")
+
+    entry = float(trade["entry_price"])
+    lev = float(trade.get("leverage") or 1.0)
+
+    # Realized PnL for the closed portion
+    if trade["type"].lower() == "buy":
+        portion_pnl = (exit_price - entry) * close_qty * lev
+    else:
+        portion_pnl = (entry - exit_price) * close_qty * lev
+
+    # Proportional margin release
+    current_margin = float(trade.get("margin_used") or ((rem_qty * entry) / lev))
+    margin_portion = (close_qty / rem_qty) * current_margin
+    refund_amount = margin_portion + portion_pnl
+
+    new_remaining = rem_qty - close_qty
+    new_margin = max(0.0, current_margin - margin_portion)
+    acc_realized_pnl = float(trade.get("realized_pnl") or 0.0) + portion_pnl
+
+    # Credit user wallet balance
+    cursor.execute(f"UPDATE {u} SET balance = balance + {p} WHERE id = {p}", (refund_amount, user_id))
+
+    # Update trade remaining state
+    cursor.execute(f"""
+    UPDATE trades
+    SET remaining_quantity = {p}, margin_used = {p}, realized_pnl = {p}, current_price = {p}
+    WHERE id = {p}
+    """, (new_remaining, new_margin, acc_realized_pnl, exit_price, trade_id))
+
+    # Append execution audit inside same atomic transaction
+    now_ts = datetime.now().isoformat()
+    cursor.execute(f"""
+    INSERT INTO trade_executions (position_id, user_id, action, quantity, price, realized_pnl, timestamp, metadata)
+    VALUES ({p}, {p}, 'PARTIAL_CLOSE', {p}, {p}, {p}, {p}, '{{}}')
+    """, (trade_id, user_id, float(close_qty), float(exit_price), float(portion_pnl), now_ts))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "trade_id": trade_id,
+        "action": "PARTIAL_CLOSE",
+        "closed_quantity": close_qty,
+        "remaining_quantity": new_remaining,
+        "exit_price": exit_price,
+        "realized_pnl": portion_pnl,
+        "total_realized_pnl": acc_realized_pnl,
+        "refund_amount": refund_amount,
+        "status": "active"
+    }
+
+def fully_close_position(trade_id: int, user_id: int, exit_price: float, outcome: str = "manual_close") -> dict:
+    """
+    Fully close an open position or cancel a pending order.
+    Releases all remaining margin, calculates final realized PnL, marks status='closed'.
+    """
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    u = get_user_table()
+
+    cursor.execute(f"SELECT * FROM trades WHERE id = {p} AND user_id = {p}", (trade_id, user_id))
+    trade = cursor.fetchone()
+    if not trade:
+        conn.close()
+        raise ValueError("Position not found or unauthorized.")
+
+    if trade["status"] == "closed":
+        conn.close()
+        raise ValueError("Position is already closed.")
+
+    now_iso = datetime.now().isoformat()
+
+    if trade["status"] == "pending":
+        cursor.execute(f"""
+        UPDATE trades
+        SET status = 'closed', exit_price = {p}, current_price = {p}, pnl = 0.0, realized_pnl = 0.0, remaining_quantity = 0.0, margin_used = 0.0, outcome = 'cancelled', closed_at = {p}
+        WHERE id = {p}
+        """, (exit_price, exit_price, now_iso, trade_id))
+        conn.commit()
+        conn.close()
+        return {
+            "success": True,
+            "trade_id": trade_id,
+            "action": "CANCEL_PENDING",
+            "closed_quantity": 0.0,
+            "remaining_quantity": 0.0,
+            "exit_price": exit_price,
+            "realized_pnl": 0.0,
+            "refund_amount": 0.0,
+            "status": "closed"
+        }
+
+    rem_qty = float(trade.get("remaining_quantity") if trade.get("remaining_quantity") is not None else trade["quantity"])
+    entry = float(trade["entry_price"])
+    lev = float(trade.get("leverage") or 1.0)
+
+    if trade["type"].lower() == "buy":
+        portion_pnl = (exit_price - entry) * rem_qty * lev
+    else:
+        portion_pnl = (entry - exit_price) * rem_qty * lev
+
+    current_margin = float(trade.get("margin_used") or ((rem_qty * entry) / lev))
+    refund_amount = current_margin + portion_pnl
+    total_realized = float(trade.get("realized_pnl") or 0.0) + portion_pnl
+
+    # Credit user balance
+    cursor.execute(f"UPDATE {u} SET balance = balance + {p} WHERE id = {p}", (refund_amount, user_id))
+
+    # Mark closed
+    cursor.execute(f"""
+    UPDATE trades
+    SET status = 'closed', remaining_quantity = 0.0, margin_used = 0.0, exit_price = {p}, current_price = {p}, pnl = {p}, realized_pnl = {p}, outcome = {p}, closed_at = {p}
+    WHERE id = {p}
+    """, (exit_price, exit_price, total_realized, total_realized, outcome, now_iso, trade_id))
+
+    # Append execution audit inside same atomic transaction
+    cursor.execute(f"""
+    INSERT INTO trade_executions (position_id, user_id, action, quantity, price, realized_pnl, timestamp, metadata)
+    VALUES ({p}, {p}, 'FULL_CLOSE', {p}, {p}, {p}, {p}, '{{}}')
+    """, (trade_id, user_id, float(rem_qty), float(exit_price), float(portion_pnl), now_iso))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "success": True,
+        "trade_id": trade_id,
+        "action": "FULL_CLOSE",
+        "closed_quantity": rem_qty,
+        "remaining_quantity": 0.0,
+        "exit_price": exit_price,
+        "realized_pnl": portion_pnl,
+        "total_realized_pnl": total_realized,
+        "refund_amount": refund_amount,
+        "status": "closed"
+    }
 
 def get_trade(trade_id):
     conn = get_connection()
@@ -698,3 +1263,231 @@ def update_trade_sl(trade_id, new_sl):
     cursor.execute(f"UPDATE trades SET sl = {p} WHERE id = {p}", (new_sl, trade_id))
     conn.commit()
     conn.close()
+
+
+# ===========================================================================
+# ORBIT AI Chatbot Conversation & Message Persistence Layer
+# ===========================================================================
+
+import json as _json
+
+def create_conversation(
+    conv_id: Optional[str] = None,
+    title: str = "New Analysis",
+    selected_asset: str = "BTC-USD",
+    selected_market: str = "Crypto",
+    user_id: Optional[int] = None,
+    conversation_id: Optional[str] = None,
+) -> dict:
+    """Create a new chat conversation."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    now_iso = datetime.now().isoformat()
+    cid = conv_id or conversation_id or str(uuid.uuid4())
+    clean_title = (title or "New Analysis").strip()[:200]
+    clean_asset = (selected_asset or "BTC-USD").strip().upper()[:50]
+    clean_market = (selected_market or "Crypto").strip()[:50]
+
+    cursor.execute(f"SELECT id, user_id, title, selected_asset, selected_market, created_at, updated_at FROM conversations WHERE id = {p}", (cid,))
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return dict(existing)
+
+    cursor.execute(f"""
+    INSERT INTO conversations (id, user_id, title, selected_asset, selected_market, created_at, updated_at)
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (cid, user_id, clean_title, clean_asset, clean_market, now_iso, now_iso))
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": cid,
+        "user_id": user_id,
+        "title": clean_title,
+        "selected_asset": clean_asset,
+        "selected_market": clean_market,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+
+def list_conversations(user_id: Optional[int] = None, limit: int = 50) -> List[dict]:
+    """Retrieve all conversations, ordered by most recently updated."""
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+
+    if user_id is not None:
+        cursor.execute(f"""
+        SELECT id, user_id, title, selected_asset, selected_market, created_at, updated_at
+        FROM conversations
+        WHERE user_id = {p} OR user_id IS NULL
+        ORDER BY updated_at DESC
+        LIMIT {int(limit)}
+        """, (user_id,))
+    else:
+        cursor.execute(f"""
+        SELECT id, user_id, title, selected_asset, selected_market, created_at, updated_at
+        FROM conversations
+        ORDER BY updated_at DESC
+        LIMIT {int(limit)}
+        """)
+
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows] if rows else []
+
+
+def get_conversation(conv_id: Optional[str] = None, conversation_id: Optional[str] = None) -> Optional[dict]:
+    """Retrieve single conversation record."""
+    cid = conv_id or conversation_id
+    if not cid:
+        return None
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    cursor.execute(f"""
+    SELECT id, user_id, title, selected_asset, selected_market, created_at, updated_at
+    FROM conversations
+    WHERE id = {p}
+    """, (cid,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_conversation(
+    conv_id: Optional[str] = None,
+    title: Optional[str] = None,
+    selected_asset: Optional[str] = None,
+    selected_market: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> bool:
+    """Update title, active asset, or market on conversation and touch updated_at."""
+    cid = conv_id or conversation_id
+    if not cid:
+        return False
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    now_iso = datetime.now().isoformat()
+
+    updates = ["updated_at = " + p]
+    params = [now_iso]
+
+    if title is not None:
+        updates.append(f"title = {p}")
+        params.append(title.strip()[:200])
+    if selected_asset is not None:
+        updates.append(f"selected_asset = {p}")
+        params.append(selected_asset.strip().upper()[:50])
+    if selected_market is not None:
+        updates.append(f"selected_market = {p}")
+        params.append(selected_market.strip()[:50])
+
+    params.append(cid)
+    query = f"UPDATE conversations SET {', '.join(updates)} WHERE id = {p}"
+    cursor.execute(query, tuple(params))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def delete_conversation(conv_id: Optional[str] = None, conversation_id: Optional[str] = None) -> bool:
+    """Delete a conversation and its cascaded chat messages."""
+    cid = conv_id or conversation_id
+    if not cid:
+        return False
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    cursor.execute(f"DELETE FROM chat_messages WHERE conversation_id = {p}", (cid,))
+    cursor.execute(f"DELETE FROM conversations WHERE id = {p}", (cid,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def save_chat_message(
+    conv_id: Optional[str] = None,
+    role: str = "user",
+    content: str = "",
+    metadata: Optional[dict] = None,
+    msg_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> dict:
+    """Save an incoming or outgoing chat message in conversation thread."""
+    cid = conv_id or conversation_id
+    mid = msg_id or str(uuid.uuid4())
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    now_iso = datetime.now().isoformat()
+    meta_json = _json.dumps(metadata or {})
+
+    # Ensure conversation exists; auto-create if missing
+    cursor.execute(f"SELECT id FROM conversations WHERE id = {p}", (cid,))
+    existing = cursor.fetchone()
+    if not existing:
+        sym = (metadata or {}).get("asset") or (metadata or {}).get("symbol") or "BTC-USD"
+        mkt = (metadata or {}).get("market") or "Crypto"
+        auto_title = content.strip()[:40] if role == "user" else f"{sym} Analysis"
+        cursor.execute(f"""
+        INSERT INTO conversations (id, user_id, title, selected_asset, selected_market, created_at, updated_at)
+        VALUES ({p}, NULL, {p}, {p}, {p}, {p}, {p})
+        """, (cid, auto_title, sym, mkt, now_iso, now_iso))
+
+    cursor.execute(f"""
+    INSERT INTO chat_messages (id, conversation_id, role, content, timestamp, metadata)
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p})
+    """, (mid, cid, role, content, now_iso, meta_json))
+
+    # Touch conversation updated_at
+    cursor.execute(f"UPDATE conversations SET updated_at = {p} WHERE id = {p}", (now_iso, cid))
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": mid,
+        "conversation_id": cid,
+        "role": role,
+        "content": content,
+        "timestamp": now_iso,
+        "metadata": metadata or {},
+    }
+
+
+def get_chat_messages(
+    conv_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    limit: int = 100,
+) -> List[dict]:
+    """Retrieve full message history for a conversation thread ordered chronologically."""
+    cid = conv_id or conversation_id
+    if not cid:
+        return []
+    conn = get_connection()
+    cursor = get_cursor(conn)
+    p = get_placeholder()
+    cursor.execute(f"""
+    SELECT id, conversation_id, role, content, timestamp, metadata
+    FROM chat_messages
+    WHERE conversation_id = {p}
+    ORDER BY timestamp ASC
+    LIMIT {int(limit)}
+    """, (cid,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    messages = []
+    for r in rows:
+        m = dict(r)
+        if isinstance(m.get("metadata"), str):
+            try:
+                m["metadata"] = _json.loads(m["metadata"])
+            except Exception:
+                m["metadata"] = {}
+        messages.append(m)
+    return messages

@@ -15,4 +15,19 @@ services:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      - STREAM_HUB_URL=http://orbit-stream:8001/publish
+    depends_on:
+      - orbit-stream
+    restart: unless-stopped
+
+  orbit-stream:
+    build:
+      context: ./go-stream
+      dockerfile: Dockerfile
+    image: orbit-stream:latest
+    container_name: orbit_stream_hub
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
     restart: unless-stopped
