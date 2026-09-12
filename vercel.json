@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://mochatrade-yc-p26-mumbai-hack.onrender.com/api/:path*"
+    },
+    {
+      "source": "/health",
+      "destination": "https://mochatrade-yc-p26-mumbai-hack.onrender.com/health"
+    }
+  ]
+}

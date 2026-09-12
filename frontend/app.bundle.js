@@ -45,8 +45,15 @@
       }
     }
     url(path) {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      return `${protocol}//${window.location.host}${path}`;
+      const customHost = window.ORBIT_BACKEND_HOST;
+      let host = window.location.host;
+      if (customHost) {
+        host = customHost;
+      } else if (window.location.hostname.includes("vercel.app")) {
+        host = "mochatrade-yc-p26-mumbai-hack.onrender.com";
+      }
+      const protocol = window.location.protocol === "https:" || host.includes("onrender.com") ? "wss:" : "ws:";
+      return `${protocol}//${host}${path}`;
     }
     static live(socket) {
       return !!socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING);
