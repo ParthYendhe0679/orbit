@@ -615,7 +615,7 @@ export function recalculateCloseEstimates(closeQty: number): void {
  * 1-Click high-speed position closure directly from the Open Trades table.
  */
 export async function quickCloseTrade(tradeId: number): Promise<void> {
-    const posList = store.get("openPositions") || [];
+    const posList = (store.get("openTrades") as Position[]) || [];
     const targetPos = posList.find((p: Position) => p.id === tradeId);
     const sym = targetPos ? (targetPos.symbol || targetPos.asset) : `Position #${tradeId}`;
 

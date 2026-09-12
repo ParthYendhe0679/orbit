@@ -162,6 +162,20 @@ import {
     STRATEGIES_DATA
 } from "./ui/landingController";
 
+import {
+    initStrategyLab,
+    initStrategyLabListeners,
+    generateStrategy,
+    runStrategyBacktest,
+    saveCurrentStrategy,
+    loadStrategyLabHistory,
+    openBacktest,
+    onStrategyLabMarketChange,
+    onStrategyLabPeriodChange,
+    onStrategyLabAssetInput,
+    selectStrategyLabAsset
+} from "./ui/strategyLabController";
+
 import { threeController } from "./three/scene";
 
 // -------------------------------------------------------------
@@ -294,6 +308,18 @@ w.drawBtcSparkline = drawBtcSparkline;
 w.ULTIMATE_SKILLS_DATA = ULTIMATE_SKILLS_DATA;
 w.STRATEGIES_DATA = STRATEGIES_DATA;
 
+// AI Strategy Lab
+w.initStrategyLab = initStrategyLab;
+w.generateStrategy = generateStrategy;
+w.runStrategyBacktest = runStrategyBacktest;
+w.saveCurrentStrategy = saveCurrentStrategy;
+w.loadStrategyLabHistory = loadStrategyLabHistory;
+w.openBacktest = openBacktest;
+w.onStrategyLabMarketChange = onStrategyLabMarketChange;
+w.onStrategyLabPeriodChange = onStrategyLabPeriodChange;
+w.onStrategyLabAssetInput = onStrategyLabAssetInput;
+w.selectStrategyLabAsset = selectStrategyLabAsset;
+
 // Formatters & Utils
 w.formatINR = formatINR;
 w.esc = esc;
@@ -407,6 +433,7 @@ function initApp(): void {
     initTerminalAgentListeners();
     initAutoBotListeners();
     initReportsListeners();
+    initStrategyLabListeners();
     setupWebSocketSubscriptions();
 
     getElement<HTMLFormElement>("login-form")?.addEventListener("submit", handleLogin);

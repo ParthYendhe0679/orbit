@@ -50,6 +50,7 @@ export function switchToTab(tabName: string): void {
     const menuBtnManageTrades = getElement("menu-btn-manage-trades");
     const menuBtnReports = getElement("menu-btn-reports");
     const menuBtnCopilot = getElement("menu-btn-copilot");
+    const menuBtnStrategyLab = getElement("menu-btn-strategy-lab");
 
     const tabContentOverview = getElement("tab-content-overview");
     const tabContentTerminal = getElement("tab-content-terminal");
@@ -57,6 +58,7 @@ export function switchToTab(tabName: string): void {
     const tabContentManageTrades = getElement("tab-content-manage-trades");
     const tabContentReports = getElement("tab-content-reports");
     const tabContentCopilot = getElement("tab-content-copilot");
+    const tabContentStrategyLab = getElement("tab-content-strategy-lab");
     const contentHeaderTitle = getElement("content-header-title");
 
     const allButtons = [
@@ -65,7 +67,8 @@ export function switchToTab(tabName: string): void {
         menuBtnAutotrade,
         menuBtnManageTrades,
         menuBtnReports,
-        menuBtnCopilot
+        menuBtnCopilot,
+        menuBtnStrategyLab
     ];
     const allContents = [
         tabContentOverview,
@@ -73,7 +76,8 @@ export function switchToTab(tabName: string): void {
         tabContentAutotrade,
         tabContentManageTrades,
         tabContentReports,
-        tabContentCopilot
+        tabContentCopilot,
+        tabContentStrategyLab
     ];
 
     allButtons.forEach((b) => b?.classList.remove("active"));
@@ -117,6 +121,11 @@ export function switchToTab(tabName: string): void {
         if (threeCanvas) threeCanvas.style.display = "none";
         if (typeof (window as any).loadConversationsList === "function") (window as any).loadConversationsList();
         if (typeof (window as any).syncCopilotBalance === "function") (window as any).syncCopilotBalance();
+    } else if (tabName === "strategy-lab") {
+        menuBtnStrategyLab?.classList.add("active");
+        tabContentStrategyLab?.classList.remove("hidden-tab");
+        safeText(contentHeaderTitle, "ORBIT AI Strategy Lab");
+        if (typeof (window as any).initStrategyLab === "function") (window as any).initStrategyLab();
     }
 }
 
@@ -311,6 +320,7 @@ export function initTerminalListeners(): void {
     getElement("menu-btn-manage-trades")?.addEventListener("click", () => switchToTab("manage-trades"));
     getElement("menu-btn-reports")?.addEventListener("click", () => switchToTab("reports"));
     getElement("menu-btn-copilot")?.addEventListener("click", () => switchToTab("copilot"));
+    getElement("menu-btn-strategy-lab")?.addEventListener("click", () => switchToTab("strategy-lab"));
 
     document.querySelectorAll(".tf-btn").forEach((btn) => {
         btn.addEventListener("click", () => {

@@ -60,6 +60,10 @@ from agents.risk_planner import plan_trade
 from agents.execution_agent import check_and_execute_trades
 from agents.portfolio_monitor import monitor_positions
 from gateway_auth import GatewayIdentityMiddleware, gateway_user_id, gateway_clerk_id
+# ORBIT AI Strategy Lab (additive): natural-language strategy interpretation and
+# backtesting. Self-contained under strategy_lab/ and mounted below; it shares
+# the market data, Valkey and database layers but no live trading code path.
+from strategy_lab.routes import router as strategy_lab_router
 
 logger = logging.getLogger("orbit.main")
 
@@ -134,6 +138,9 @@ app = FastAPI(lifespan=lifespan)
 # Private routes and /ws only accept identities forwarded by the Go gateway
 # (see gateway_auth.py).
 app.add_middleware(GatewayIdentityMiddleware)
+# /api/strategy-lab/* — private by default at both the gateway (AccessUser) and
+# here (gateway_auth.classify -> "user"), like every other /api route.
+app.include_router(strategy_lab_router)
 
 @app.middleware("http")
 async def add_no_cache_header(request, call_next):

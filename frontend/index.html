@@ -285,7 +285,6 @@
                     </div>
                     <div class="brand-text">
                         <h2 class="sidebar-brand-title">ORBIT</h2>
-                        <span class="sidebar-brand-sub">12-AGENT AI TERMINAL</span>
                     </div>
                 </div>
 
@@ -314,6 +313,10 @@
                     <button id="menu-btn-copilot" class="sidebar-menu-item">
                         <i class="fa-solid fa-brain"></i>
                         <span>ORBIT AI Analyst</span>
+                    </button>
+                    <button id="menu-btn-strategy-lab" class="sidebar-menu-item">
+                        <i class="fa-solid fa-flask"></i>
+                        <span>AI Strategy Lab</span>
                     </button>
                 </nav>
 
@@ -577,42 +580,47 @@
                                             <canvas id="chart-overlay-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;"></canvas>
                                         </div>
                                         <div class="chart-footer-toolbar">
-                                            <div class="active-asset-info">
-                                                <span class="active-ticker-badge" id="active-ticker-display">BTC-USD</span>
-                                                <span class="active-indicator-pulse"></span>
-                                                <span class="active-status-label" id="atv-status-label">AI Crew Ready</span>
+                                            <!-- ROW 1: Active ticker & chart tools -->
+                                            <div class="chart-footer-row chart-footer-row-top">
+                                                <div class="active-asset-info">
+                                                    <span class="active-ticker-badge" id="active-ticker-display">BTC-USD</span>
+                                                    <span class="active-indicator-pulse"></span>
+                                                    <span class="active-status-label" id="atv-status-label">AI Crew Ready</span>
+                                                </div>
+                                                <div class="atv-toolbar-group">
+                                                    <button id="btn-draw-sr" class="glow-btn btn-secondary">
+                                                        <i class="fa-solid fa-arrows-to-line"></i> S/R Levels
+                                                    </button>
+                                                    <button id="btn-inspect-strategies" class="glow-btn btn-secondary" onclick="openStrategyModal()">
+                                                        <i class="fa-solid fa-layer-group"></i> 12 Strategies
+                                                    </button>
+                                                    <button id="btn-inspect-consensus" class="glow-btn btn-secondary" onclick="openConsensusModal()">
+                                                        <i class="fa-solid fa-brain"></i> Consensus Radar
+                                                    </button>
+                                                </div>
                                             </div>
-                                            <div class="atv-toolbar-actions">
-                                                <button id="btn-draw-sr" class="glow-btn btn-secondary">
-                                                    <i class="fa-solid fa-arrows-to-line"></i> S/R Levels
-                                                </button>
-                                                <button id="btn-inspect-strategies" class="glow-btn btn-secondary" onclick="openStrategyModal()">
-                                                    <i class="fa-solid fa-layer-group"></i> 12 Strategies
-                                                </button>
-                                                <button id="btn-inspect-consensus" class="glow-btn btn-secondary" onclick="openConsensusModal()">
-                                                    <i class="fa-solid fa-brain"></i> Consensus Radar
-                                                </button>
-                                                <button id="btn-inspect-brain" class="glow-btn btn-primary" onclick="openBrainModal()">
-                                                    <i class="fa-solid fa-atom"></i> ORBIT Brain
-                                                </button>
-                                                <button id="btn-inspect-risk" class="glow-btn btn-secondary" onclick="openRiskModal()">
-                                                    <i class="fa-solid fa-shield-halved"></i> Risk Guard
-                                                </button>
-                                                <button id="btn-inspect-opportunity" class="glow-btn btn-secondary" onclick="openOpportunityModal()">
-                                                    <i class="fa-solid fa-bullseye"></i> Opportunity
-                                                </button>
-                                                <button id="btn-inspect-decision" class="glow-btn btn-primary" onclick="openDecisionModal()">
-                                                    <i class="fa-solid fa-compass"></i> Market Stance
-                                                </button>
-                                                <button id="btn-inspect-explain" class="glow-btn btn-primary" onclick="openExplainModal()">
-                                                    <i class="fa-solid fa-lightbulb"></i> Market Insights
-                                                </button>
-                                                <button id="btn-open-copilot" class="glow-btn btn-primary btn-copilot" onclick="openCopilotModal()">
-                                                    <i class="fa-solid fa-sparkles"></i> AI Copilot
-                                                </button>
-                                                <button id="stop-btn" class="glow-btn btn-danger">
-                                                    <i class="fa-solid fa-stop"></i> Stop
-                                                </button>
+                                            <!-- ROW 2: ORBIT AI Engine & Copilot suite -->
+                                            <div class="chart-footer-row chart-footer-row-bottom">
+                                                <div class="atv-toolbar-actions">
+                                                    <button id="btn-inspect-brain" class="glow-btn btn-primary" onclick="openBrainModal()">
+                                                        <i class="fa-solid fa-atom"></i> ORBIT Brain
+                                                    </button>
+                                                    <button id="btn-inspect-risk" class="glow-btn btn-secondary" onclick="openRiskModal()">
+                                                        <i class="fa-solid fa-shield-halved"></i> Risk Guard
+                                                    </button>
+                                                    <button id="btn-inspect-opportunity" class="glow-btn btn-secondary" onclick="openOpportunityModal()">
+                                                        <i class="fa-solid fa-bullseye"></i> Opportunity
+                                                    </button>
+                                                    <button id="btn-inspect-decision" class="glow-btn btn-primary" onclick="openDecisionModal()">
+                                                        <i class="fa-solid fa-compass"></i> Market Stance
+                                                    </button>
+                                                    <button id="btn-inspect-explain" class="glow-btn btn-primary" onclick="openExplainModal()">
+                                                        <i class="fa-solid fa-lightbulb"></i> Market Insights
+                                                    </button>
+                                                    <button id="btn-open-copilot" class="glow-btn btn-primary btn-copilot" onclick="openCopilotModal()">
+                                                        <i class="fa-solid fa-sparkles"></i> AI Copilot
+                                                    </button>
+                                                </div>
                                             </div>
                                         </div>
                                     </section>
@@ -1597,12 +1605,18 @@
                                             </div>
                                         </div>
 
-                                        <!-- TRADE THROUGH AGENT BUTTON -->
+                                        <!-- TRADE THROUGH AGENT & STOP CONTROLS -->
                                         <div class="atv-trade-btn-wrap">
-                                            <button id="trade-through-agent-btn" class="trade-agent-btn">
-                                                <i class="fa-solid fa-rocket"></i>
-                                                Trade Through Agent
-                                            </button>
+                                            <div class="atv-trade-btn-group">
+                                                <button id="trade-through-agent-btn" class="trade-agent-btn">
+                                                    <i class="fa-solid fa-rocket"></i>
+                                                    Trade Through Agent
+                                                </button>
+                                                <button id="stop-btn" class="glow-btn btn-danger stop-agent-btn" title="Stop AI Agent Crew Pipeline" disabled>
+                                                    <i class="fa-solid fa-stop"></i>
+                                                    Stop
+                                                </button>
+                                            </div>
                                             <div class="atv-progress-bar-wrap hidden" id="atv-progress-wrap">
                                                 <div class="atv-progress-bar" id="atv-progress-bar"></div>
                                             </div>
@@ -2400,7 +2414,117 @@
                             </main>
                         </div>
                     </div><!-- /tab-content-copilot -->
-                    
+
+                    <!-- TAB 6: ORBIT AI STRATEGY LAB -->
+                    <div id="tab-content-strategy-lab" class="tab-content hidden-tab">
+                        <div class="slab-container">
+
+                            <!-- BUILDER -->
+                            <section class="slab-builder card">
+                                <header class="slab-head">
+                                    <div>
+                                        <h2 class="slab-title">
+                                            <i class="fa-solid fa-flask text-emerald"></i> ORBIT AI Strategy Lab
+                                        </h2>
+                                        <p class="slab-sub">
+                                            Describe a trading strategy in your own words. No Pine Script, no Python,
+                                            no indicator coding — ORBIT turns it into a validated rule set and
+                                            backtests it on real historical candles.
+                                        </p>
+                                    </div>
+                                    <div class="slab-supported">
+                                        <span class="slab-muted">Supported indicators</span>
+                                        <div id="slab-supported-list" class="slab-chip-row"></div>
+                                    </div>
+                                </header>
+
+                                <div class="slab-field">
+                                    <label for="slab-description">Describe your trading strategy in your own words</label>
+                                    <textarea id="slab-description" rows="4" spellcheck="false"
+                                        placeholder="e.g. Buy BTC when the 20 EMA crosses above the 50 EMA and RSI is below 70. Exit when the 20 EMA crosses below the 50 EMA. Use a 3% stop loss."></textarea>
+                                    <div id="slab-examples" class="slab-example-row"></div>
+                                </div>
+
+                                <div class="slab-config-grid">
+                                    <div class="slab-field">
+                                        <label for="slab-market">Market</label>
+                                        <select id="slab-market"></select>
+                                    </div>
+                                    <div class="slab-field slab-field-asset">
+                                        <label for="slab-asset">Asset</label>
+                                        <input id="slab-asset" type="text" autocomplete="off" spellcheck="false"
+                                            placeholder="Search a symbol, e.g. BTC-USD" value="BTC-USD">
+                                        <div id="slab-asset-results" class="slab-asset-results hidden"></div>
+                                        <div id="slab-asset-examples" class="slab-chip-row slab-chip-row-sm"></div>
+                                    </div>
+                                    <div class="slab-field">
+                                        <label for="slab-timeframe">Timeframe</label>
+                                        <select id="slab-timeframe"></select>
+                                    </div>
+                                    <div class="slab-field">
+                                        <label for="slab-period">Backtest Period</label>
+                                        <select id="slab-period"></select>
+                                    </div>
+                                    <div class="slab-field">
+                                        <label for="slab-capital">Initial Capital</label>
+                                        <input id="slab-capital" type="number" min="100" step="100" value="10000">
+                                    </div>
+                                    <div class="slab-field">
+                                        <label for="slab-commission">Commission % <span class="slab-muted">(per side)</span></label>
+                                        <input id="slab-commission" type="number" min="0" max="5" step="0.01" value="0">
+                                    </div>
+                                </div>
+
+                                <div id="slab-custom-range" class="slab-config-grid hidden">
+                                    <div class="slab-field">
+                                        <label for="slab-start-date">Start Date</label>
+                                        <input id="slab-start-date" type="date">
+                                    </div>
+                                    <div class="slab-field">
+                                        <label for="slab-end-date">End Date</label>
+                                        <input id="slab-end-date" type="date">
+                                    </div>
+                                </div>
+
+                                <div class="slab-actions">
+                                    <button id="slab-generate-btn" type="button" class="glow-btn btn-primary">
+                                        <i class="fa-solid fa-wand-magic-sparkles"></i> Generate Strategy
+                                    </button>
+                                    <span class="slab-muted slab-hint">Ctrl + Enter</span>
+                                </div>
+
+                                <div id="slab-status" class="slab-status hidden"></div>
+                            </section>
+
+                            <!-- WHAT ORBIT UNDERSTOOD / CLARIFYING QUESTIONS -->
+                            <section id="slab-clarify" class="slab-clarify card hidden"></section>
+                            <section id="slab-understanding" class="slab-understanding card hidden"></section>
+
+                            <!-- RESULTS -->
+                            <section id="slab-results" class="slab-results card hidden"></section>
+
+                            <!-- HISTORY -->
+                            <section class="slab-history card">
+                                <div class="slab-chart-head">
+                                    <span><i class="fa-solid fa-clock-rotate-left"></i> Backtest History</span>
+                                    <button id="slab-refresh-history" type="button" class="glow-btn btn-secondary slab-btn-sm">
+                                        <i class="fa-solid fa-rotate"></i> Refresh
+                                    </button>
+                                </div>
+                                <div id="slab-history-list" class="slab-history-list">
+                                    <div class="slab-muted slab-center">Loading…</div>
+                                </div>
+                            </section>
+
+                            <p class="slab-footnote">
+                                <i class="fa-solid fa-shield-halved"></i>
+                                Backtests are simulations on historical data with simulated capital. They never open a
+                                real position, never touch your wallet, margin or bots, and past results do not predict
+                                future returns.
+                            </p>
+                        </div>
+                    </div><!-- /tab-content-strategy-lab -->
+
                 </div><!-- /page-view -->
             </main>
         </div>
