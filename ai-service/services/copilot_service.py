@@ -368,11 +368,11 @@ class CopilotService:
                 top_risk = rc.detail or rc.message or rc.title if hasattr(rc, "detail") else str(rc)
 
             return (
-                f"### {sym} — {stance} ({conf:.1f}% Confidence)\n\n"
-                f"• **Market Stance:** {stance} ({clarity} clarity). {first_why}\n"
-                f"• **Risk Profile:** {risk_lvl} ({risk_score:.0f}/100) — {top_risk}.\n"
-                f"• **Opportunity Score:** {opp_score:.0f}/100 ({opp_lvl}).\n"
-                f"• **Key Invalidation:** Reversal in momentum or breach of support zones.\n\n"
+                f"## {sym} — {stance} ({conf:.1f}% confidence)\n\n"
+                f"- **Market Stance:** {stance} ({clarity} clarity). {first_why}\n"
+                f"- **Risk Profile:** {risk_lvl} ({risk_score:.0f}/100) — {top_risk}.\n"
+                f"- **Opportunity Score:** {opp_score:.0f}/100 ({opp_lvl}).\n"
+                f"- **Key Invalidation:** Reversal in momentum or breach of support zones.\n\n"
                 f"*This is analytical decision support and not an automatic trading action.*"
             )
 
@@ -381,7 +381,7 @@ class CopilotService:
             stance_desc = "favorable and leaning upward" if "bull" in stance.lower() else "cautious and leaning downward" if "bear" in stance.lower() else "neutral, waiting for a clearer trend"
             first_why = analysis.why[0] if analysis.why else "technical indicators and quantitative models are broadly aligned"
             return (
-                f"### {sym} Analysis (Plain English)\n\n"
+                f"## {sym} — In Simple Terms\n\n"
                 f"In simple terms, ORBIT's quantitative models currently evaluate **{sym}** as **{stance}** with **{conf:.1f}% confidence**.\n\n"
                 f"**What does this mean?**\n"
                 f"The overall market environment looks {stance_desc}. Specifically, {first_why.lower()}.\n\n"
@@ -397,45 +397,45 @@ class CopilotService:
         why_bullets = ""
         if analysis.why:
             for pt in analysis.why[:3]:
-                why_bullets += f"• {pt}\n"
+                why_bullets += f"- {pt}\n"
         else:
-            why_bullets = f"• {headline}\n"
+            why_bullets = f"- {headline}\n"
 
         risk_bullets = ""
         if analysis.risk_constraints:
             for rc in analysis.risk_constraints[:3]:
                 text = rc.detail or rc.message or rc.title if hasattr(rc, "detail") else str(rc)
-                risk_bullets += f"• {text}\n"
+                risk_bullets += f"- {text}\n"
         else:
-            risk_bullets = "• Volatility and data quality metrics within controlled operational boundaries\n"
+            risk_bullets = "- Volatility and data quality are within normal limits\n"
 
         invalidation_bullets = ""
         if analysis.uncertainties:
             for u in analysis.uncertainties[:3]:
-                invalidation_bullets += f"• Breakdown in {u.factor}: {u.explanation}\n"
+                invalidation_bullets += f"- Breakdown in {u.factor}: {u.explanation}\n"
         else:
-            invalidation_bullets = "• Breakdown below important structural support\n• Weakening volume momentum\n• Significant adverse market catalyst\n"
+            invalidation_bullets = "- The price falling below an important support level\n- Trading volume drying up\n- A major piece of bad news for this asset\n"
 
         data_bullets = ""
         all_evidence = analysis.primary_evidence + analysis.supporting_evidence
         if all_evidence:
             for ev in all_evidence[:3]:
-                data_bullets += f"• [{ev.category.value}] {ev.title}: {ev.detail or ev.message}\n"
+                data_bullets += f"- [{ev.category.value}] {ev.title}: {ev.detail or ev.message}\n"
         else:
-            data_bullets = f"• Synthesized across 7 specialist agents and 12 quantitative strategies\n"
+            data_bullets = f"- Combined readings from 7 specialist agents and 12 strategies\n"
 
         ans = (
-            f"### {sym} — ANALYSIS\n\n"
+            f"## {sym} — What ORBIT Sees\n\n"
             f"**Market Stance:** {stance}\n"
             f"**Confidence:** {conf:.1f}% ({clarity} Clarity)\n"
             f"**Risk Profile:** {risk_lvl} ({risk_score:.1f}/100) | **Opportunity:** {opp_score:.1f}/100\n\n"
-            f"### WHY\n"
+            f"## Why\n"
             f"{why_bullets}\n"
-            f"### RISKS\n"
+            f"## Main Risks\n"
             f"{risk_bullets}\n"
-            f"### WHAT WOULD CHANGE THE VIEW\n"
+            f"## What Would Change This View\n"
             f"{invalidation_bullets}\n"
-            f"### DATA & EVIDENCE\n"
+            f"## What This Is Based On\n"
             f"{data_bullets}\n"
             f"*This is analytical decision-support information and not an automatic trading action.*"
         )
@@ -461,20 +461,29 @@ class CopilotService:
         if history:
             history_snippet = "\n".join(f"{h['role'].upper()}: {h['content']}" for h in history[-4:])
 
-        prompt = f"""You are the ORBIT AI Market Intelligence Copilot, an elite quantitative decision-support assistant.
-Your responsibility is to explain, clarify, and reason over ORBIT's actual intelligence output.
+        prompt = f"""You are the ORBIT AI Market Analyst. You explain what ORBIT's analysis
+actually found, in language an ordinary person can follow.
 
 STRICT OPERATIONAL RULES:
 1. GROUNDING ONLY: Answer ONLY using the factual ORBIT Analysis Context provided below.
 2. ZERO HALLUCINATION: If a metric, indicator, price target, or detail is NOT in the context, explicitly state: "This information is not available in the current ORBIT analysis." NEVER invent numbers, dates, or prices.
 3. FINANCIAL BOUNDARY: You are an analytical explainer. You do NOT execute trades, place orders, guarantee profits, or provide personal financial advice.
 4. UNCERTAINTY HONESTY: If the market stance has low confidence or mixed signals, communicate that clearly. Never convert uncertainty into false certainty.
-5. FORMATTING & READABILITY: Avoid large unstructured walls of text. Use clean markdown with clear headers (### WHY, ### RISKS, ### WHAT WOULD CHANGE THE VIEW).
-6. RESPONSE MODE: User requested mode is '{response_mode}'.
-   - If QUICK: Provide a short, punchy 3-bullet summary.
-   - If EXPLAIN_SIMPLY: Explain everything in plain English for a beginner without financial jargon.
-   - If DETAILED: Provide deep institutional reasoning with distinct sections.
-7. Always conclude with: "*This is analytical decision-support information and not an automatic trading action.*"
+5. PLAIN LANGUAGE (most important): Write for a smart beginner, not a trading desk.
+   - Short sentences. Everyday words. Say "the price fell" instead of "the asset exhibited downward price action".
+   - The first time you use a market term (support, resistance, momentum, volatility, RSI, moving average), explain it in a few plain words right there, e.g. "RSI (a gauge of whether a price has moved too far, too fast)".
+   - Never use hype or filler: no "elite", "institutional-grade", "synthesized across subsystems", "quantitative intelligence layer".
+   - Lead with the answer, then the reasoning. Do not restate the question back.
+6. FORMATTING: Reply in simple Markdown that renders cleanly in a chat bubble.
+   - Section headings use "## " followed by ordinary Title Case words, e.g. "## What Is Happening Now", "## Why ORBIT Leans Bullish", "## Main Risks", "## What Would Change This View".
+   - Keep every paragraph to 1-3 short sentences.
+   - Use "- " for bullet lists. Put the important numbers in **bold**.
+   - Do NOT use horizontal rules ("---"), ALL-CAPS headings, nested bullets, or tables unless the user asks to compare things side by side.
+7. RESPONSE MODE: User requested mode is '{response_mode}'.
+   - If QUICK: 3 short bullets, no headings, under 80 words.
+   - If EXPLAIN_SIMPLY: No headings and no jargon at all — 2 to 4 short paragraphs, as if explaining to a friend who has never traded.
+   - If DETAILED: Use the section headings above, but keep the sentences just as plain.
+8. Always conclude with: "*This is analytical decision-support information and not an automatic trading action.*"
 
 ACTIVE ORBIT ANALYSIS CONTEXT (GROUND TRUTH):
 {context}
@@ -485,7 +494,7 @@ RECENT CONVERSATION HISTORY:
 USER QUESTION:
 {query}
 
-ANSWER (grounded strictly in ORBIT data, structured and readable):"""
+ANSWER (grounded strictly in ORBIT data, in plain and simple language):"""
         return prompt
 
     # -----------------------------------------------------------------------
@@ -601,12 +610,12 @@ ANSWER (grounded strictly in ORBIT data, structured and readable):"""
             or analysis.market_stance == MarketStance.INSUFFICIENT_DATA
         ):
             answer = (
-                f"### {active_sym} — ANALYSIS\n\n"
+                f"## {active_sym} — What ORBIT Sees\n\n"
                 f"**Market Stance:** INSUFFICIENT_DATA\n"
                 f"**Confidence:** 0.0%\n\n"
-                f"### LIMITATION\n"
-                f"• Verified market data or active ORBIT analysis for **{active_sym}** ({timeframe}) is currently unavailable.\n"
-                f"• Please verify the ticker symbol or wait for market data feed synchronization.\n\n"
+                f"## Why There Is No Answer Yet\n"
+                f"- ORBIT does not have verified market data for **{active_sym}** ({timeframe}) right now.\n"
+                f"- Check that the ticker symbol is correct, or wait a moment for the data feed to catch up.\n\n"
                 f"*This is analytical decision-support information and not an automatic trading action.*"
             )
             self.append_message(cid, "user", raw_msg, metadata={"symbol": active_sym, "market": selected_market})

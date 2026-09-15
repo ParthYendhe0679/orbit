@@ -19,6 +19,57 @@ const boundFeeds = new WeakSet<HTMLElement>();
 let cachedGlobal: NewsHeadline[] | null = null;
 const symbolCache: Record<string, NewsHeadline[]> = {};
 
+// A cold provider fetch (NewsAPI, then the Yahoo RSS fallback) plus a busy
+// server can legitimately outrun a short deadline, so give each attempt room
+// and retry instead of leaving a dead-end error on screen.
+const NEWS_TIMEOUT_MS = 20000;
+const NEWS_RETRY_DELAYS_MS = [1500, 4000];
+const SYMBOL_NEWS_REFRESH_MS = 180000; // matches the ai-service headline cache TTL
+
+let symbolRefreshTimer: number | null = null;
+let symbolRequestId = 0;
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+/**
+ * One news request with a deadline. The timer is cleared on every exit path so
+ * a slow-but-successful response never aborts a later attempt.
+ */
+async function requestHeadlines(fetcher: (signal: AbortSignal) => Promise<NewsHeadline[]>): Promise<NewsHeadline[]> {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), NEWS_TIMEOUT_MS);
+    try {
+        return await fetcher(controller.signal);
+    } finally {
+        window.clearTimeout(timer);
+    }
+}
+
+/** Retries a news request a couple of times before giving up on the panel. */
+async function requestHeadlinesWithRetry(
+    fetcher: (signal: AbortSignal) => Promise<NewsHeadline[]>,
+    label: string,
+    isStale: () => boolean
+): Promise<NewsHeadline[]> {
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt <= NEWS_RETRY_DELAYS_MS.length; attempt++) {
+        if (attempt > 0) {
+            await delay(NEWS_RETRY_DELAYS_MS[attempt - 1]);
+            if (isStale()) return [];
+        }
+        try {
+            return await requestHeadlines(fetcher);
+        } catch (err) {
+            lastErr = err;
+            if (isStale()) return [];
+            console.warn(`[News] ${label} attempt ${attempt + 1} failed:`, err);
+        }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`${label} unavailable`);
+}
+
 function stopNewsScroll(): void {
     if (scrollRAF !== null) {
         cancelAnimationFrame(scrollRAF);
@@ -102,10 +153,12 @@ export async function fetchGlobalNews(): Promise<void> {
         feed.innerHTML = `<div class="news-loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading market news…</div>`;
     }
 
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 8000);
     try {
-        const headlines = await marketService.getGlobalNews(controller.signal);
+        const headlines = await requestHeadlinesWithRetry(
+            (signal) => marketService.getGlobalNews(signal),
+            "Global news",
+            () => false
+        );
         if (headlines.length) {
             cachedGlobal = headlines;
             renderGlobalNewsHeadlines(headlines);
@@ -114,9 +167,9 @@ export async function fetchGlobalNews(): Promise<void> {
         }
     } catch (err) {
         console.warn("[News] Global news unavailable:", err);
-        if (!cachedGlobal) feed.innerHTML = `<div class="news-loading">⚠️ Could not load world market news.</div>`;
-    } finally {
-        window.clearTimeout(timer);
+        if (!cachedGlobal) {
+            feed.innerHTML = `<div class="news-loading">⚠️ Could not load world market news. <button type="button" class="news-retry-btn" data-news-retry="global">Retry</button></div>`;
+        }
     }
 }
 
@@ -143,11 +196,29 @@ function renderSymbolHeadlines(headlines: NewsHeadline[], ticker: HTMLElement, s
     ticker.style.animation = `newsScrollUp ${duration}s linear infinite`;
 }
 
-/** Loads the terminal's news ticker for one symbol. */
+/** Stops the terminal ticker's periodic refresh (on symbol change or exit). */
+export function stopSymbolNewsRefresh(): void {
+    if (symbolRefreshTimer !== null) {
+        window.clearInterval(symbolRefreshTimer);
+        symbolRefreshTimer = null;
+    }
+    symbolRequestId++;
+}
+
+/**
+ * Loads the terminal's news ticker for one symbol, retrying a transient
+ * failure and then refreshing on a timer, so a single slow response no longer
+ * leaves "Could not load news" on screen until the user switches symbols.
+ */
 export async function fetchSymbolNews(symbol: string): Promise<void> {
     const ticker = getElement("atv-news-scroll");
     if (!ticker || !symbol) return;
     const key = symbol.toUpperCase();
+
+    stopSymbolNewsRefresh();
+    const requestId = symbolRequestId;
+    const isStale = () => requestId !== symbolRequestId;
+
     if (symbolCache[key]?.length) {
         renderSymbolHeadlines(symbolCache[key], ticker, symbol);
     } else {
@@ -155,16 +226,57 @@ export async function fetchSymbolNews(symbol: string): Promise<void> {
         ticker.style.animation = "none";
     }
 
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 8000);
     try {
-        const headlines = await marketService.getSymbolNews(symbol, controller.signal);
+        const headlines = await requestHeadlinesWithRetry(
+            (signal) => marketService.getSymbolNews(symbol, signal),
+            `${symbol} news`,
+            isStale
+        );
+        if (isStale()) return;
         if (headlines.length) symbolCache[key] = headlines;
         if (headlines.length || !symbolCache[key]) renderSymbolHeadlines(headlines, ticker, symbol);
     } catch (err) {
+        if (isStale()) return;
         console.warn(`[News] ${symbol} news unavailable:`, err);
-        if (!symbolCache[key]) ticker.innerHTML = `<span class="news-ticker-loading">⚠️ Could not load news for ${esc(symbol)}.</span>`;
-    } finally {
-        window.clearTimeout(timer);
+        if (!symbolCache[key]?.length) {
+            ticker.style.animation = "none";
+            ticker.innerHTML =
+                `<span class="news-ticker-loading">⚠️ Could not load news for ${esc(symbol)}. ` +
+                `<button type="button" class="news-retry-btn" data-news-retry="${esc(key)}">Retry</button></span>`;
+        }
+    }
+
+    // Keep the ticker current for as long as this symbol stays selected.
+    if (!isStale()) {
+        symbolRefreshTimer = window.setInterval(() => {
+            if (isStale()) return;
+            marketService
+                .getSymbolNews(symbol)
+                .then((fresh) => {
+                    if (isStale() || !fresh.length) return;
+                    symbolCache[key] = fresh;
+                    const el = getElement("atv-news-scroll");
+                    if (el) renderSymbolHeadlines(fresh, el, symbol);
+                })
+                .catch((err) => console.warn(`[News] ${symbol} refresh skipped:`, err));
+        }, SYMBOL_NEWS_REFRESH_MS);
     }
 }
+
+/**
+ * Retry buttons rendered into the news panels. Delegated from the document so
+ * the handler survives every re-render of the panel contents.
+ */
+document.addEventListener("click", (ev) => {
+    const btn = (ev.target as HTMLElement | null)?.closest?.("[data-news-retry]") as HTMLElement | null;
+    if (!btn) return;
+    ev.preventDefault();
+    const target = btn.getAttribute("data-news-retry") || "";
+    if (target === "global") {
+        cachedGlobal = null;
+        void fetchGlobalNews();
+    } else if (target) {
+        delete symbolCache[target];
+        void fetchSymbolNews(target);
+    }
+});

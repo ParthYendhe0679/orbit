@@ -1,7 +1,7 @@
 {
-  "name": "testttai",
+  "name": "orbit-trading-terminal",
   "version": "1.0.0",
-  "description": "",
+  "description": "Institutional-grade multi-agent autonomous algorithmic trading platform",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -n \"BACKEND,AI,STREAM\" -c \"cyan,magenta,yellow\" \"npm run dev:backend\" \"npm run dev:ai\" \"npm run dev:stream\"",
@@ -15,8 +15,16 @@
     "build:backend": "cd backend && go build -o bin/backend.exe .",
     "test": "npm run typecheck && cd backend && go test ./... && cd ../go-stream && go test ./... && cd .. && python -m pytest tests"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "algorithmic-trading",
+    "multi-agent-system",
+    "quantitative-finance",
+    "go",
+    "fastapi",
+    "threejs",
+    "typescript"
+  ],
+  "author": "Parth Yendhe (https://github.com/ParthYendhe0679)",
   "license": "ISC",
   "dependencies": {
     "@clerk/clerk-js": "^6.31.1",

@@ -14,7 +14,7 @@ import { esc, formatINR, formatINRSafe } from "../utils/formatters";
 import { getElement, safeText } from "../utils/dom";
 import { initChart, drawChartOverlay } from "./terminalController";
 import { logToTerminal } from "./autoBotController";
-import { fetchSymbolNews } from "./newsController";
+import { fetchSymbolNews, stopSymbolNewsRefresh } from "./newsController";
 
 let terminalAsset: string | null = null;
 let searchTimer: number | undefined;
@@ -272,6 +272,7 @@ export function stopAgentCrew(): void {
     setAnalyzingMode(false);
     terminalAsset = null;
     clearSignal();
+    stopSymbolNewsRefresh();
     window.setTimeout(() => {
         getElement("terminal-active-trading-view")?.classList.add("hidden-tab");
         getElement("terminal-stock-select-view")?.classList.remove("hidden-tab");

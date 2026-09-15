@@ -149,10 +149,10 @@
         console.warn("[WS] Max reconnect attempts reached");
         return;
       }
-      const delay = Math.min(1e3 * Math.pow(1.5, this.reconnectAttempts), 1e4);
+      const delay2 = Math.min(1e3 * Math.pow(1.5, this.reconnectAttempts), 1e4);
       this.reconnectAttempts++;
       if (this.primaryReconnectTimer) clearTimeout(this.primaryReconnectTimer);
-      this.primaryReconnectTimer = window.setTimeout(() => this.connectPrimary(), delay);
+      this.primaryReconnectTimer = window.setTimeout(() => this.connectPrimary(), delay2);
     }
     connectStreamHub() {
       let socket;
@@ -262,18 +262,139 @@
     const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
     return Number.isFinite(n) ? formatINR(n) : "\u2014";
   }
+  function formatInlineMarkdown(text) {
+    const codeSpans = [];
+    let s = text.replace(/`([^`\n]+)`/g, (_match, code) => {
+      codeSpans.push(esc(code));
+      return `\0CODE${codeSpans.length - 1}\0`;
+    });
+    s = esc(s);
+    s = s.replace(
+      /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^\w*])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>");
+    return s.replace(
+      /\u0000CODE(\d+)\u0000/g,
+      (_match, i) => `<code class="copilot-inline-code">${codeSpans[Number(i)]}</code>`
+    );
+  }
+  function markdownTableCells(line) {
+    return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  }
   function formatCopilotMarkdown(raw) {
     if (!raw) return "";
-    let formatted = esc(raw);
-    formatted = formatted.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-    formatted = formatted.replace(/\*(.*?)\*/g, "<em>$1</em>");
-    formatted = formatted.replace(/`([^`]+)`/g, '<code class="copilot-inline-code">$1</code>');
-    formatted = formatted.replace(/^[\*\-]\s+(.+)$/gm, '<li class="copilot-bullet-item">$1</li>');
-    formatted = formatted.replace(/^\d+\.\s+(.+)$/gm, '<li class="copilot-numbered-item">$1</li>');
-    formatted = formatted.replace(/(<li class="copilot-bullet-item">.*?<\/li>)+/gs, '<ul class="copilot-list">$&</ul>');
-    formatted = formatted.replace(/(<li class="copilot-numbered-item">.*?<\/li>)+/gs, '<ol class="copilot-list">$&</ol>');
-    formatted = formatted.replace(/\n\n/g, "<br><br>");
-    return formatted;
+    const lines = String(raw).replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let paragraph = [];
+    let quote = [];
+    let listTag = null;
+    const closeParagraph = () => {
+      if (paragraph.length) {
+        out.push(`<p>${paragraph.join("<br>")}</p>`);
+        paragraph = [];
+      }
+    };
+    const closeQuote = () => {
+      if (quote.length) {
+        out.push(`<blockquote class="copilot-quote">${quote.join("<br>")}</blockquote>`);
+        quote = [];
+      }
+    };
+    const closeList = () => {
+      if (listTag) {
+        out.push(`</${listTag}>`);
+        listTag = null;
+      }
+    };
+    const closeAll = () => {
+      closeParagraph();
+      closeQuote();
+      closeList();
+    };
+    const openList = (tag) => {
+      if (listTag === tag) return;
+      closeList();
+      out.push(`<${tag} class="copilot-list">`);
+      listTag = tag;
+    };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (line.startsWith("```")) {
+        closeAll();
+        const body = [];
+        i++;
+        while (i < lines.length && !lines[i].trim().startsWith("```")) {
+          body.push(lines[i]);
+          i++;
+        }
+        out.push(`<pre class="copilot-code-block"><code>${esc(body.join("\n"))}</code></pre>`);
+        continue;
+      }
+      if (!line) {
+        closeAll();
+        continue;
+      }
+      if (/^(?:-{3,}|\*{3,}|_{3,}|={3,})$/.test(line)) {
+        closeAll();
+        out.push('<hr class="copilot-rule">');
+        continue;
+      }
+      const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (heading) {
+        closeAll();
+        const level = heading[1].length;
+        const tag = level <= 1 ? "h2" : level >= 4 ? "h4" : "h3";
+        const title = heading[2].replace(/\s*#+\s*$/, "");
+        out.push(`<${tag}>${formatInlineMarkdown(title)}</${tag}>`);
+        continue;
+      }
+      if (/^\|.*\|$/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|$/.test(lines[i + 1].trim())) {
+        closeAll();
+        const headers = markdownTableCells(line);
+        const rows = [];
+        i += 2;
+        while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
+          rows.push(markdownTableCells(lines[i]));
+          i++;
+        }
+        i--;
+        const head = headers.map((h) => `<th>${formatInlineMarkdown(h)}</th>`).join("");
+        const body = rows.map((r) => `<tr>${r.map((c) => `<td>${formatInlineMarkdown(c)}</td>`).join("")}</tr>`).join("");
+        out.push(`<table class="copilot-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`);
+        continue;
+      }
+      const bullet = /^[-*+\u2022]\s+(.*)$/.exec(line);
+      if (bullet) {
+        closeParagraph();
+        closeQuote();
+        openList("ul");
+        out.push(`<li class="copilot-bullet-item">${formatInlineMarkdown(bullet[1])}</li>`);
+        continue;
+      }
+      const numbered = /^\d{1,3}[.)]\s+(.*)$/.exec(line);
+      if (numbered) {
+        closeParagraph();
+        closeQuote();
+        openList("ol");
+        out.push(`<li class="copilot-numbered-item">${formatInlineMarkdown(numbered[1])}</li>`);
+        continue;
+      }
+      const blockquote = /^>\s?(.*)$/.exec(line);
+      if (blockquote) {
+        closeParagraph();
+        closeList();
+        quote.push(formatInlineMarkdown(blockquote[1]));
+        continue;
+      }
+      closeQuote();
+      closeList();
+      paragraph.push(formatInlineMarkdown(line));
+    }
+    closeAll();
+    return out.join("");
   }
 
   // src/utils/dom.ts
@@ -1906,6 +2027,40 @@
   var boundFeeds = /* @__PURE__ */ new WeakSet();
   var cachedGlobal = null;
   var symbolCache = {};
+  var NEWS_TIMEOUT_MS = 2e4;
+  var NEWS_RETRY_DELAYS_MS = [1500, 4e3];
+  var SYMBOL_NEWS_REFRESH_MS = 18e4;
+  var symbolRefreshTimer = null;
+  var symbolRequestId = 0;
+  function delay(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+  async function requestHeadlines(fetcher) {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), NEWS_TIMEOUT_MS);
+    try {
+      return await fetcher(controller.signal);
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+  async function requestHeadlinesWithRetry(fetcher, label, isStale) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= NEWS_RETRY_DELAYS_MS.length; attempt++) {
+      if (attempt > 0) {
+        await delay(NEWS_RETRY_DELAYS_MS[attempt - 1]);
+        if (isStale()) return [];
+      }
+      try {
+        return await requestHeadlines(fetcher);
+      } catch (err) {
+        lastErr = err;
+        if (isStale()) return [];
+        console.warn(`[News] ${label} attempt ${attempt + 1} failed:`, err);
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(`${label} unavailable`);
+  }
   function stopNewsScroll() {
     if (scrollRAF !== null) {
       cancelAnimationFrame(scrollRAF);
@@ -1980,10 +2135,12 @@
       stopNewsScroll();
       feed.innerHTML = `<div class="news-loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading market news\u2026</div>`;
     }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 8e3);
     try {
-      const headlines = await marketService.getGlobalNews(controller.signal);
+      const headlines = await requestHeadlinesWithRetry(
+        (signal) => marketService.getGlobalNews(signal),
+        "Global news",
+        () => false
+      );
       if (headlines.length) {
         cachedGlobal = headlines;
         renderGlobalNewsHeadlines(headlines);
@@ -1992,9 +2149,9 @@
       }
     } catch (err) {
       console.warn("[News] Global news unavailable:", err);
-      if (!cachedGlobal) feed.innerHTML = `<div class="news-loading">\u26A0\uFE0F Could not load world market news.</div>`;
-    } finally {
-      window.clearTimeout(timer);
+      if (!cachedGlobal) {
+        feed.innerHTML = `<div class="news-loading">\u26A0\uFE0F Could not load world market news. <button type="button" class="news-retry-btn" data-news-retry="global">Retry</button></div>`;
+      }
     }
   }
   function renderSymbolHeadlines(headlines, ticker, symbol) {
@@ -2016,29 +2173,68 @@
     const duration = Math.max(50, Math.floor(ticker.scrollHeight / 2 / 14));
     ticker.style.animation = `newsScrollUp ${duration}s linear infinite`;
   }
+  function stopSymbolNewsRefresh() {
+    if (symbolRefreshTimer !== null) {
+      window.clearInterval(symbolRefreshTimer);
+      symbolRefreshTimer = null;
+    }
+    symbolRequestId++;
+  }
   async function fetchSymbolNews(symbol) {
     const ticker = getElement("atv-news-scroll");
     if (!ticker || !symbol) return;
     const key = symbol.toUpperCase();
+    stopSymbolNewsRefresh();
+    const requestId = symbolRequestId;
+    const isStale = () => requestId !== symbolRequestId;
     if (symbolCache[key]?.length) {
       renderSymbolHeadlines(symbolCache[key], ticker, symbol);
     } else {
       ticker.innerHTML = `<span class="news-ticker-loading">\u{1F4E1} Fetching news for ${esc(symbol)}\u2026</span>`;
       ticker.style.animation = "none";
     }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 8e3);
     try {
-      const headlines = await marketService.getSymbolNews(symbol, controller.signal);
+      const headlines = await requestHeadlinesWithRetry(
+        (signal) => marketService.getSymbolNews(symbol, signal),
+        `${symbol} news`,
+        isStale
+      );
+      if (isStale()) return;
       if (headlines.length) symbolCache[key] = headlines;
       if (headlines.length || !symbolCache[key]) renderSymbolHeadlines(headlines, ticker, symbol);
     } catch (err) {
+      if (isStale()) return;
       console.warn(`[News] ${symbol} news unavailable:`, err);
-      if (!symbolCache[key]) ticker.innerHTML = `<span class="news-ticker-loading">\u26A0\uFE0F Could not load news for ${esc(symbol)}.</span>`;
-    } finally {
-      window.clearTimeout(timer);
+      if (!symbolCache[key]?.length) {
+        ticker.style.animation = "none";
+        ticker.innerHTML = `<span class="news-ticker-loading">\u26A0\uFE0F Could not load news for ${esc(symbol)}. <button type="button" class="news-retry-btn" data-news-retry="${esc(key)}">Retry</button></span>`;
+      }
+    }
+    if (!isStale()) {
+      symbolRefreshTimer = window.setInterval(() => {
+        if (isStale()) return;
+        marketService.getSymbolNews(symbol).then((fresh) => {
+          if (isStale() || !fresh.length) return;
+          symbolCache[key] = fresh;
+          const el3 = getElement("atv-news-scroll");
+          if (el3) renderSymbolHeadlines(fresh, el3, symbol);
+        }).catch((err) => console.warn(`[News] ${symbol} refresh skipped:`, err));
+      }, SYMBOL_NEWS_REFRESH_MS);
     }
   }
+  document.addEventListener("click", (ev) => {
+    const btn = ev.target?.closest?.("[data-news-retry]");
+    if (!btn) return;
+    ev.preventDefault();
+    const target = btn.getAttribute("data-news-retry") || "";
+    if (target === "global") {
+      cachedGlobal = null;
+      void fetchGlobalNews();
+    } else if (target) {
+      delete symbolCache[target];
+      void fetchSymbolNews(target);
+    }
+  });
 
   // src/ui/terminalAgentController.ts
   var terminalAsset = null;
@@ -2246,6 +2442,7 @@
     setAnalyzingMode(false);
     terminalAsset = null;
     clearSignal();
+    stopSymbolNewsRefresh();
     window.setTimeout(() => {
       getElement("terminal-active-trading-view")?.classList.add("hidden-tab");
       getElement("terminal-stock-select-view")?.classList.remove("hidden-tab");
